@@ -170,6 +170,31 @@ Six-step curl battery against `:8001`:
 - Alice lists → her two notes, most-recent first, Bob's invisible.
 - Bob lists → his one note only.
 
+### Addendum — Swagger UI authorization
+
+Both servers now expose a browser-testable Swagger UI at `/docs`.
+
+**The mechanic.** Middleware does the real enforcement. FastAPI's
+`HTTPBearer(auto_error=False)` attached as a route dependency does nothing
+at runtime (the `auto_error=False` disables the dependency's own 401) —
+its sole purpose is to make OpenAPI include a `components.securitySchemes`
+entry so Swagger's "Authorize" button appears and the UI auto-injects the
+`Authorization: Bearer …` header into "Try it out" requests.
+
+**Why two layers instead of one.** The `/mcp/*` routes are a mounted Starlette
+sub-app, not FastAPI routes, so FastAPI's dependency system can't reach
+them. Middleware is the only layer that covers both /api/* and /mcp/*.
+The Depends() on /api/* is purely a documentation hook on top of the
+universal middleware enforcement.
+
+**Exempt paths.** `/api/health`, `/docs`, `/redoc`, `/openapi.json`,
+`/docs/oauth2-redirect` bypass the middleware — these are the static
+pages needed to *load* Swagger in the first place. Auth happens *inside*
+Swagger, per API call.
+
+**How to use.** Open http://127.0.0.1:8000/docs (or :8001 for notes),
+click Authorize, paste `tok_alice` or `tok_bob`, try any endpoint.
+
 ## Stage 4 — Agent (not yet started)
 
 Pending. Covers:

@@ -20,12 +20,23 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from fastapi.security import HTTPBearer
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
 from mcp_server import auth
 from mcp_server.core import state
+
+# Swagger-UI affordance. HTTPBearer declares the scheme on the OpenAPI
+# spec so Swagger's "Authorize" button appears and auto-injects the
+# header into "Try it out" calls. auto_error=False because actual
+# enforcement lives in auth.auth_middleware — this Depends() is purely
+# a documentation hook, not a second enforcement layer.
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+    description="Bearer token (e.g. tok_alice). Same map as AUTH_TOKENS_JSON in .env.",
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -133,25 +144,25 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/api/ingest")
+@app.post("/api/ingest", dependencies=[Depends(bearer_scheme)])
 async def api_ingest(body: IngestBody) -> dict:
     org_id = auth.require_identity()["org_id"]
     return await asyncio.to_thread(state.ingest_document, body.title, body.content, org_id)
 
 
-@app.get("/api/search")
+@app.get("/api/search", dependencies=[Depends(bearer_scheme)])
 async def api_search(q: str, top_k: int = 5) -> list[dict]:
     org_id = auth.require_identity()["org_id"]
     return await asyncio.to_thread(state.search_documents, q, org_id, top_k)
 
 
-@app.get("/api/documents")
+@app.get("/api/documents", dependencies=[Depends(bearer_scheme)])
 async def api_list_documents(limit: int = 20, cursor: str | None = None) -> dict:
     org_id = auth.require_identity()["org_id"]
     return await asyncio.to_thread(state.list_documents, org_id, limit, cursor)
 
 
-@app.get("/api/documents/{document_id}")
+@app.get("/api/documents/{document_id}", dependencies=[Depends(bearer_scheme)])
 async def api_get_document(document_id: str) -> dict:
     org_id = auth.require_identity()["org_id"]
     try:
@@ -160,7 +171,7 @@ async def api_get_document(document_id: str) -> dict:
         return {"error": "not_found", "message": str(e)}
 
 
-@app.get("/api/corpus/stats")
+@app.get("/api/corpus/stats", dependencies=[Depends(bearer_scheme)])
 async def api_corpus_stats() -> dict:
     org_id = auth.require_identity()["org_id"]
     return await asyncio.to_thread(state.describe_corpus, org_id)

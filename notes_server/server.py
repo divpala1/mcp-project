@@ -33,11 +33,19 @@ import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import Response
+from fastapi.security import HTTPBearer
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Swagger-UI documentation hook — see mcp_server/server.py for full rationale.
+# auto_error=False because enforcement is in auth_middleware below.
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+    description="Bearer token (e.g. tok_alice). Same map as AUTH_TOKENS_JSON in .env.",
+)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -80,8 +88,19 @@ current_identity: contextvars.ContextVar[dict[str, str] | None] = (
 )
 
 
+# Paths exempt from auth — liveness + Swagger/ReDoc pages (static HTML).
+# Authentication happens *inside* Swagger via its Authorize button.
+_UNAUTHED_PATHS = {
+    "/api/health",
+    "/docs",
+    "/docs/oauth2-redirect",
+    "/redoc",
+    "/openapi.json",
+}
+
+
 async def auth_middleware(request: Request, call_next):
-    if request.url.path == "/api/health":
+    if request.url.path in _UNAUTHED_PATHS:
         return await call_next(request)
 
     header = request.headers.get("Authorization", "")
@@ -168,13 +187,13 @@ class CreateBody(BaseModel):
     text: str
 
 
-@app.post("/api/notes")
+@app.post("/api/notes", dependencies=[Depends(bearer_scheme)])
 async def api_create(body: CreateBody) -> dict:
     org_id = require_identity()["org_id"]
     return await asyncio.to_thread(_create, org_id, body.text)
 
 
-@app.get("/api/notes")
+@app.get("/api/notes", dependencies=[Depends(bearer_scheme)])
 async def api_list() -> list[dict]:
     org_id = require_identity()["org_id"]
     return await asyncio.to_thread(_list, org_id)

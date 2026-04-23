@@ -39,8 +39,19 @@ current_identity: contextvars.ContextVar[dict[str, str] | None] = (
     contextvars.ContextVar("current_identity", default=None)
 )
 
-# Liveness-only endpoint: exempt from auth so uptime checks can reach it.
-UNAUTHED_PATHS = {"/api/health"}
+# Paths exempt from auth:
+#   - /api/health: liveness probe, reached by uptime checks.
+#   - /docs, /redoc, /openapi.json: FastAPI-generated Swagger/ReDoc UIs
+#     and their schema. These are static pages; authenticating *inside*
+#     them (via Swagger's Authorize button → bearer token → per-request
+#     header) is how the user exercises protected routes.
+UNAUTHED_PATHS = {
+    "/api/health",
+    "/docs",
+    "/docs/oauth2-redirect",
+    "/redoc",
+    "/openapi.json",
+}
 
 
 def resolve_token(token: str) -> dict[str, str] | None:
