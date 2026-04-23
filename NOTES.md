@@ -50,7 +50,8 @@ slots in.
 
 ### Open threads / things to revisit
 
-- [ ] Drop real `GROQ_API_KEY` into `.env` before Stage 4.
+- [x] Python version upgrade (done: 3.11.15).
+- [x] `GROQ_API_KEY` populated in `.env` (done).
 
 ---
 
@@ -124,10 +125,50 @@ Twelve-step curl battery against `:8000`:
   prevents cross-org enumeration).
 - Stats: each org sees `total_documents: 1`, `total_chunks: 1`.
 
-## Stage 3 — Notes MCP Server (not yet started)
+## Stage 3 — Notes MCP Server (2026-04-23)
 
-Pending. Tiny second server to demonstrate `MultiServerMCPClient`
-aggregation and the value of tool namespacing (C2b).
+### What landed
+
+- `notes_server/server.py` — a single ~150-line file containing config,
+  auth, in-memory storage, two MCP tools (`notes_create`, `notes_list`),
+  and a parallel REST surface. Runs on `:8001`.
+
+### Decisions worth remembering
+
+**Duplicated auth, not imported.** `notes_server/server.py` reimplements
+the bearer-token / `ContextVar` / `auth_middleware` pattern instead of
+importing `mcp_server.auth`. Rationale: each MCP server should be
+deployable independently — importing would couple their deployment
+lifecycles and dependency surfaces. ~40 lines of duplication is the
+honest price. A project with ≥3 MCP servers would extract a shared
+`mcp_common` package instead; at 2, it's premature abstraction.
+
+**Same AUTH_TOKENS_JSON across servers.** Both servers read from the
+same `.env` entry. This is the right shape: auth is a transport pattern
+you reuse across the deployment. The agent holds one bearer token and
+it works everywhere.
+
+**In-memory, process-local storage.** The notes dict is wiped on restart.
+Flagged in-code so the pattern doesn't tempt future-me into treating it
+as a real notes service.
+
+**Most-recent-first ordering.** Reverse insertion order is the friendlier
+default for an LLM summarising "what have I done recently." Insertion
+order would rarely be what the agent wants.
+
+### Learning checkpoints surfaced
+
+- **#7 (multi-server aggregation, C2b).** Tools have distinct prefixes:
+  RAG uses `docs_*`, notes uses `notes_*`. When `MultiServerMCPClient`
+  merges both tool lists in Stage 4, there's nothing to disambiguate.
+
+### Smoke-test evidence (2026-04-23)
+
+Six-step curl battery against `:8001`:
+- `401` on missing bearer.
+- Alice creates two notes; Bob creates one.
+- Alice lists → her two notes, most-recent first, Bob's invisible.
+- Bob lists → his one note only.
 
 ## Stage 4 — Agent (not yet started)
 
