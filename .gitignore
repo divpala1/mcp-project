@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual envs
+venv/
+.venv/
+
+# Secrets — .env must NEVER be committed.
+# .env.example IS committed so others know the shape.
+.env
+.env.*
+!.env.example
+
+# Archived / old code (not part of the new project)
+_archive/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Claude
+.claude/

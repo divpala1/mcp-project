@@ -1,0 +1,30 @@
+# One-service compose file for local Qdrant.
+#
+# Why Docker instead of the embedded ":memory:" client?
+#   - The embedded client works for toy tests but has gotchas: its storage
+#     isn't persistent across runs, and it behaves subtly differently from
+#     the real server (no gRPC, different concurrency model). For a project
+#     whose whole point is "see how a real MCP + RAG setup works," the real
+#     server is the honest teaching tool.
+#   - A dedicated process also lets you poke at Qdrant's own REST UI
+#     (http://localhost:6333/dashboard) while the MCP server is running —
+#     invaluable when debugging "is this org filter actually being applied?"
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    container_name: mcp-learning-qdrant
+    ports:
+      # REST: mcp_server/core/state.py talks to this.
+      - "6333:6333"
+      # gRPC: not used by our code (qdrant-client defaults to REST), but
+      # when you want to try the faster transport later.
+      # - "6334:6334"
+    volumes:
+      # Named volume — survives `docker compose down` but is wiped by
+      # `docker compose down -v`. Good balance for a learning project.
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
