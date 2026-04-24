@@ -21,10 +21,8 @@ services:
       # when you want to try the faster transport later.
       # - "6334:6334"
     volumes:
-      # Named volume — survives `docker compose down` but is wiped by
-      # `docker compose down -v`. Good balance for a learning project.
-      - qdrant_data:/qdrant/storage
+      # Bind mount — data lives in ./qdrant_data/ inside the project directory,
+      # so you can see and delete it without Docker volume commands.
+      # It is git-ignored (see .gitignore) so it never gets committed.
+      - ./qdrant_data:/qdrant/storage
     restart: unless-stopped
-
-volumes:
-  qdrant_data:

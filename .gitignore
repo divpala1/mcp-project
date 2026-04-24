@@ -28,3 +28,6 @@ _archive/
 
 # Claude
 .claude/
+
+# Qdrant local data (bind-mounted from docker-compose.yml)
+qdrant_data/
