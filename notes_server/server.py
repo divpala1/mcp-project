@@ -1,6 +1,9 @@
 """
 Notes MCP server — the tiny second server (Stage 3).
 
+For a step-by-step explanation of why this server exists and how it connects
+to the multi-server pattern, see notes_server/WALKTHROUGH.md.
+
 Its sole job: demonstrate that `MultiServerMCPClient` in the agent will
 aggregate tools from multiple MCP servers, and that tool namespacing
 (here: `notes_*`) keeps names distinct from the RAG server's `docs_*`.

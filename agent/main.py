@@ -3,6 +3,9 @@ Agent entrypoint.
 
     python -m agent.main "your prompt here"
 
+For a full step-by-step explanation of this file and how all the agent modules
+connect, see agent/WALKTHROUGH.md.
+
 What this file demonstrates (learning checkpoint #6 — streaming):
 
     `astream_events(version="v2")` is the event bus LangGraph exposes.

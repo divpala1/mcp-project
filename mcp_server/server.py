@@ -1,6 +1,9 @@
 """
 RAG MCP server — FastAPI + FastMCP in one process.
 
+For a full step-by-step explanation of how requests flow through this server
+and why each design choice was made, see mcp_server/WALKTHROUGH.md.
+
 Why one process?
     Both the REST layer (/api/*) and the MCP SSE transport (/mcp/sse) share
     the same `core.state` module — one Qdrant client, one embedding model.
