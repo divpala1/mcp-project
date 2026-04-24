@@ -11,7 +11,7 @@
 name = "mcp-learning-agent"
 version = "0.1.0"
 description = "Hands-on learning project: a LangGraph agent that connects to MCP servers."
-readme = "NOTES.md"
+readme = "README.md"
 # Matches CLAUDE.md's target. 3.11 gives us tomllib in stdlib, nicer error
 # messages ("ExceptionGroup" etc.), and the `Self` type without import dance.
 # We still prefer `from __future__ import annotations` everywhere for
@@ -43,9 +43,11 @@ dependencies = [
     # langgraph: graph-based agent runtime. We use `create_react_agent` from
     # langgraph.prebuilt to start; CLAUDE.md calls out where we'd replace it
     # with a hand-built graph later.
+    # langchain: LLM provider interfaces, tools interface, and (soon) MCP adapters.
     "langgraph>=1.1.0",
     "langgraph-prebuilt>=1.0.0",
     "langchain-core>=1.3.0",
+    "langchain>=1.2.0",
     # langchain-mcp-adapters: converts MCP tools (JSON-RPC + JSON Schema) into
     # LangChain BaseTool objects. This is what lets `llm.bind_tools([...])`
     # accept tools coming from an MCP server without us writing glue code.
