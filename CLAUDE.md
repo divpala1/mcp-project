@@ -205,20 +205,33 @@ Turn the existing RAG scaffold into a real, org-scoped RAG server.
 
 ```
 agent/
-├── __init__.py
-├── agent.py          # LangGraph graph (nodes, edges, state). Start with
-│                     # create_react_agent; mark where a supervisor would wrap it.
-├── tools.py          # MCP tool loading via MultiServerMCPClient. Handles session
-│                     # lifecycle and auth header injection.
-├── llm.py            # get_llm() factory. Reads LLM_PROVIDER + LLM_MODEL from config.
-├── config.py         # pydantic-settings. All env vars validated at startup.
-├── observability.py  # LangSmith / logging setup.
-└── main.py           # Entrypoint. Opens MCP session, runs the agent, streams output.
+├── __init__.py        # Public API: run_agent, AgentEvent, McpServerSpec
+├── agent.py           # LangGraph graph via create_agent(). Marks extension points
+│                      # for planning, reflection, memory, and multi-agent (C3).
+├── core.py            # Framework-free run_agent() engine — the seam CLI, FastAPI,
+│                      # and tests all call. Yields AgentEvent dicts.
+├── tools.py           # MCP tool loading via MultiServerMCPClient. Handles session
+│                      # lifecycle and auth header injection.
+├── llm.py             # get_llm() factory. Reads LLM_PROVIDER + LLM_MODEL from config.
+├── config.py          # pydantic-settings. All env vars validated at startup.
+├── observability.py   # LangSmith / logging setup.
+├── api.py             # Optional FastAPI APIRouter (POST /agent/chat, SSE streaming).
+│                      # Drop into any host with include_router(); or import run_agent
+│                      # directly for a custom endpoint.
+├── app.py             # 3-line standalone FastAPI host. For local testing.
+├── main.py            # CLI entrypoint. Reads AGENT_AUTH_TOKEN, renders events to
+│                      # stdout with emoji markers.
+└── prompts/
+    ├── __init__.py    # Prompt registry: get_prompt(), get_prompt_version(),
+    │                  # render_tool_catalog(). Loads *.md files on first use,
+    │                  # caches per-process.
+    └── system.md      # System prompt template (v2). Contains {tool_catalog}
+                       # placeholder filled at runtime from the live MCP tool list.
 ```
 
 ### Agent Loop
 
-Use `create_react_agent` from `langgraph.prebuilt`:
+Use `create_agent` from `langchain.agents` (successor to the deprecated `create_react_agent`):
 1. `call_model` — LLM decides to respond or call tools.
 2. `tools` (`ToolNode`) — executes tool calls.
 3. Conditional edge — loop back if tool calls, end if not.
@@ -282,8 +295,6 @@ future-self understanding.
 **Type hints everywhere.** `from __future__ import annotations`. Pydantic models for
 anything crossing a boundary.
 
-**Old code present** I have some older MCP code in this workspace in "mcp_server/" directory from when I was first learning the protocol. Ignore it. We are starting fresh. Do not read it, reuse it, or let it influence the design.
-
 ---
 
 ## Project Layout
@@ -292,6 +303,8 @@ anything crossing a boundary.
 project-root/
 ├── CLAUDE.md
 ├── NOTES.md                   # Running log of learning checkpoints (Claude Code fills in)
+├── README.md
+├── test_agent.py              # End-to-end smoke test for POST /agent/chat SSE endpoint
 ├── .env
 ├── .env.example
 ├── pyproject.toml
@@ -299,22 +312,35 @@ project-root/
 │
 ├── mcp_server/
 │   ├── server.py              # FastAPI + FastMCP entrypoint
-│   ├── auth.py                # Bearer token -> identity, contextvars
+│   ├── auth.py                # Bearer token → identity via ContextVar
+│   ├── WALKTHROUGH.md         # File-by-file walkthrough with single-request trace
 │   └── core/
-│       ├── state.py           # Qdrant-backed logic, org-scoped
-│       ├── embeddings.py      # sentence-transformers wrapper
-│       └── chunking.py        # Fixed-size chunker
+│       ├── config.py          # pydantic-settings, fail-fast validation
+│       ├── state.py           # Qdrant-backed RAG engine, org-scoped
+│       ├── embeddings.py      # sentence-transformers singleton
+│       └── chunking.py        # Fixed-size word chunker with overlap
 │
-├── notes_server/              # Second MCP server (demonstrates multi-server)
-│   └── server.py
+├── notes_server/              # Second MCP server (demonstrates multi-server pattern)
+│   ├── server.py
+│   └── WALKTHROUGH.md         # Why it exists, auth, in-memory storage, tool design
 │
 └── agent/
-    ├── agent.py
-    ├── tools.py
-    ├── llm.py
-    ├── config.py
-    ├── observability.py
-    └── main.py
+    ├── __init__.py            # Public API: run_agent, AgentEvent, McpServerSpec
+    ├── agent.py               # LangGraph graph builder
+    ├── core.py                # Framework-free run_agent() engine
+    ├── tools.py               # MCP client builder, session lifecycle, auth
+    ├── llm.py                 # get_llm() factory (groq | anthropic | ollama)
+    ├── config.py              # pydantic-settings, default_mcp_servers()
+    ├── observability.py       # Optional LangSmith tracing
+    ├── api.py                 # Optional FastAPI APIRouter (POST /agent/chat, SSE)
+    ├── app.py                 # 3-line standalone host for local testing
+    ├── main.py                # CLI entrypoint
+    ├── WALKTHROUGH.md         # Layer-by-layer guide through the agent package
+    └── prompts/
+        ├── __init__.py        # Prompt registry (get_prompt, get_prompt_version,
+        │                      # render_tool_catalog)
+        ├── system.md          # System prompt template (v2) with {tool_catalog}
+        └── WALKTHROUGH.md     # Prompt registry walkthrough
 ```
 
 ---

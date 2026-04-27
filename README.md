@@ -308,7 +308,10 @@ Full reference in [`.env.example`](.env.example). Frequently-touched ones:
     ├── core.py                  framework-free run_agent() async generator
     ├── api.py                   optional FastAPI APIRouter (POST /agent/chat, SSE)
     ├── app.py                   3-line standalone host for local testing
-    └── main.py                  CLI entrypoint — renders run_agent events to stdout
+    ├── main.py                  CLI entrypoint — renders run_agent events to stdout
+    └── prompts/
+        ├── __init__.py          registry: get_prompt(), get_prompt_version(), render_tool_catalog()
+        └── system.md            system prompt template (v2); {tool_catalog} filled at runtime
 ```
 
 ---
@@ -322,6 +325,8 @@ Full reference in [`.env.example`](.env.example). Frequently-touched ones:
 **Inspect what the agent sees.** Keep both servers up and hit their Swagger UIs. The REST surface mirrors the MCP tools exactly — same state, same org filters.
 
 **Add a new MCP tool to the RAG server.** Add a sync function in [`mcp_server/core/state.py`](mcp_server/core/state.py), then add an `@mcp.tool()`-decorated async wrapper in [`mcp_server/server.py`](mcp_server/server.py) that reads identity and calls it via `asyncio.to_thread`.
+
+**Edit the system prompt.** Open [`agent/prompts/system.md`](agent/prompts/system.md), change the text, and bump the `version:` integer in the frontmatter. The next process start picks it up (prompts are cached per-process, not per-request — restart uvicorn to reload when running as a service). The version number is recorded as `system@vN` in every LangSmith trace so you can compare prompt iterations across runs.
 
 **Enable LangSmith tracing.** Add `LANGSMITH_API_KEY=...` to `.env`. Traces appear under the `mcp-agent-learning` project in LangSmith.
 

@@ -24,9 +24,10 @@ are thin renderers over the same event stream.
 │  agent/core.py     ◄── run_agent(prompt, *, auth_token, mcp_servers=None)
 │                       framework-free async generator yielding AgentEvent dicts
 ├──────────────────────────────────────────────┤
-│  agent/agent.py    build_agent(llm, tools) → CompiledStateGraph
+│  agent/agent.py    build_agent(llm, tools, system_prompt) → CompiledStateGraph
 │  agent/llm.py      get_llm() factory (memoized)
 │  agent/tools.py    build_mcp_client(servers, *, auth_token)
+│  agent/prompts/   get_prompt("system", tool_catalog=...) + render_tool_catalog(tools)
 │  agent/config.py   pydantic-settings + default_mcp_servers() helper
 │  agent/observability.py   optional LangSmith
 └──────────────────────────────────────────────┘
@@ -36,12 +37,13 @@ When you invoke the agent — through either the CLI or HTTP — six things happ
 inside `run_agent()`:
 
 ```
-1. Tracing setup        agent/observability.py    enable LangSmith if key is present
-2. LLM construction     agent/llm.py              instantiate the right provider (cached)
-3. Server resolution    agent/config.py           env defaults OR caller's `mcp_servers=`
-4. MCP client build     agent/tools.py            inject the caller's bearer token
-5. Tool loading         agent/tools.py            connect to MCP servers, fetch tool list
-6. Agent compilation    agent/agent.py            bind tools to LLM, build the LangGraph graph
+1. Tracing setup        agent/observability.py      enable LangSmith if key is present
+2. LLM construction     agent/llm.py                instantiate the right provider (cached)
+3. Server resolution    agent/config.py             env defaults OR caller's `mcp_servers=`
+4. MCP client build     agent/tools.py              inject the caller's bearer token
+5. Tool loading         agent/tools.py              connect to MCP servers, fetch tool list
+6. Prompt rendering     agent/prompts/__init__.py   fill {tool_catalog} from live tool list
+7. Agent compilation    agent/agent.py              bind tools to LLM, build the LangGraph graph
 ```
 
 After step 6, `run_agent()` iterates `astream_events` from the graph and
@@ -213,10 +215,63 @@ This conversion is **learning checkpoint #3**: MCP JSON Schema → LangChain
 `BaseTool`. After this point, the MCP-ness is invisible — the agent sees
 ordinary LangChain tools.
 
-### Step 6 — Agent compilation (`agent/agent.py`)
+### Step 6 — Prompt rendering (`agent/prompts/`)
 
 ```python
-agent = build_agent(llm, tools)
+system_prompt = get_prompt(
+    "system",
+    tool_catalog=render_tool_catalog(tools),
+)
+```
+
+`render_tool_catalog` groups the tools just loaded in Step 5 by namespace prefix
+and formats them into a human-readable catalog string:
+
+```
+  docs_*   — namespace
+             docs_get, docs_ingest, docs_list, docs_search, docs_stats
+
+  notes_*  — namespace
+             notes_create, notes_list
+```
+
+`get_prompt` reads `agent/prompts/system.md`, strips the YAML frontmatter, and
+renders the template body with `{tool_catalog}` replaced by that string.
+
+**Why derive the catalog from live tools, not hardcode it?** Adding a new
+`@mcp.tool()` on the server side is all that's needed — the system prompt's tool
+list stays in lockstep automatically. A hardcoded catalog drifts; a derived one
+cannot.
+
+**Prompt versioning:** `system.md` opens with a `---\nversion: N\n---` block.
+`get_prompt_version("system")` returns `"v2"` (or whatever integer is there).
+`core.py` passes this to LangGraph's `run_config`:
+
+```python
+run_config = {
+    "metadata": {
+        "prompt_version": f"system@{get_prompt_version('system')}",
+    },
+}
+```
+
+Every LangSmith span for this run is tagged with `system@v2`, so you can group
+and compare runs across prompt revisions without guessing which text produced
+which behaviour.
+
+**Caching:** both `_load(name)` and the returned string are `@cache`-decorated —
+the file is read once per process lifetime. To pick up edits: restart the process
+(same as config env vars).
+
+See [agent/prompts/WALKTHROUGH.md](prompts/WALKTHROUGH.md) for a full walkthrough
+of the registry design.
+
+---
+
+### Step 7 — Agent compilation (`agent/agent.py`)
+
+```python
+agent = build_agent(llm, tools, system_prompt=system_prompt)
 ```
 
 `build_agent` calls `create_agent(model=llm, tools=tools, ...)` and returns a
@@ -244,7 +299,7 @@ the API request as a `tools` array. The LLM uses these schemas to know what
 names and argument shapes it can invoke. Without `bind_tools`, the LLM can
 talk about tools but can't actually call them.
 
-### Step 7 — Streaming and event translation
+### Step 8 — Streaming and event translation
 
 ```python
 async for event in agent.astream_events(
@@ -426,9 +481,9 @@ main.py               api.py
             │
          core.py  (run_agent, AgentEvent, McpServerSpec)
             │
-   ┌────────┼─────────┬─────────────┬──────────┐
-   │        │         │             │          │
-observability.py  llm.py        tools.py    agent.py
+   ┌────────┼─────────┬─────────────┬──────────┬──────────┐
+   │        │         │             │          │          │
+observability.py  llm.py        tools.py    agent.py  prompts/
                     │              │          │
                     └────► config.py ◄────────┘
                               │
@@ -441,6 +496,63 @@ arguments. This makes each module independently testable: pass a fake LLM and
 fake tools to `build_agent`, and it assembles a graph without any network or
 API calls. Pass a fake `mcp_servers` dict + dummy auth token to `run_agent`,
 and the engine runs against any test stub.
+
+---
+
+## Layer 4 — Prompt registry (`agent/prompts/`)
+
+The prompt registry is a small, self-contained package that keeps prompt text out
+of Python source files. Full details are in
+[agent/prompts/WALKTHROUGH.md](prompts/WALKTHROUGH.md); the short version:
+
+**Why a registry at all?** Two reasons:
+
+1. *Diffs are readable.* Prompt changes show up in `git diff` as natural-language
+   diffs, not string-constant diffs buried inside Python files. Reviewers see what
+   the model will read, not an escaped multiline literal.
+
+2. *Extensible without touching Python.* The registry is designed so that when
+   planning and reflection prompts arrive, they are just more `.md` files. The
+   registry API (`get_prompt`, `get_prompt_version`) doesn't change.
+
+**Three public functions:**
+
+| Function | What it does |
+|---|---|
+| `get_prompt(name, **vars)` | Load, cache, and render the named prompt with variable substitution |
+| `get_prompt_version(name)` | Return `"vN"` from the frontmatter; used as LangSmith trace metadata |
+| `render_tool_catalog(tools)` | Derive a namespace-grouped catalog string from the live tool list |
+
+**The `system.md` structure** (read alongside the file):
+
+```
+---              ← YAML frontmatter
+version: 2       ← bump this on any meaningful edit
+---
+You are a capable AI assistant...
+
+# Tools available this session
+{tool_catalog}   ← filled at runtime by render_tool_catalog(tools)
+
+# Choosing a tool
+...
+
+# Using tools well
+...
+
+# Handling tool output
+...
+
+# Authorization
+...
+
+# When in doubt
+...
+```
+
+The sections after the tool catalog are behavioural guardrails — they remain
+constant across runs. The catalog is the only dynamic part; it varies by which MCP
+servers are connected.
 
 ---
 

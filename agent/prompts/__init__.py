@@ -44,6 +44,19 @@ Versioning:
     without a version is a sign of an incomplete edit, not a state to
     tolerate.
 
+Cache strategy — TTL + mtime:
+  - A prompt is re-read from disk when EITHER:
+      (a) the file's mtime has changed since the last load (edit detected
+          immediately on the next request), OR
+      (b) more than PROMPT_CACHE_TTL_SECONDS have elapsed since the last
+          successful load (safety net for filesystems with low mtime
+          resolution and for in-place overwrite tools that preserve mtime).
+  - This means you can edit a .md file and the change takes effect on the
+    next agent run — no restart needed.
+  - PROMPT_CACHE_TTL_SECONDS defaults to 30. Override at module level
+    (`agent.prompts.PROMPT_CACHE_TTL_SECONDS = N`) before the first call,
+    or call `bust_cache()` to force an immediate reload of all entries.
+
 # TODO(future): when MCP `prompts` capability lands, the registry can grow
 # a second source — fetch via `MultiServerMCPClient.get_prompts()` and
 # merge into the same name -> (meta, body) dict. The render API
@@ -52,8 +65,10 @@ Versioning:
 """
 from __future__ import annotations
 
-from functools import cache
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Iterable
 
 from langchain_core.prompts import PromptTemplate
@@ -61,7 +76,21 @@ from langchain_core.tools import BaseTool
 
 PROMPTS_DIR = Path(__file__).parent
 
-__all__ = ["get_prompt", "get_prompt_version", "render_tool_catalog"]
+# How long (seconds) a cache entry is considered fresh even without an mtime change.
+# Lower values mean quicker pickup of edits on filesystems that batch mtime updates.
+PROMPT_CACHE_TTL_SECONDS: int = 300
+
+__all__ = ["get_prompt", "get_prompt_version", "render_tool_catalog", "bust_cache"]
+
+import logging
+log = logging.getLogger(__name__)
+
+@dataclass
+class _CacheEntry:
+    meta: dict[str, str]
+    body: str
+    mtime: float          # st_mtime at load time
+    loaded_at: float = field(default_factory=time.monotonic)
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -89,27 +118,60 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     return meta, body
 
 
-@cache
+_cache: dict[str, _CacheEntry] = {}
+_cache_lock = Lock()
+
+
 def _load(name: str) -> tuple[dict[str, str], str]:
     """
     Read `agent/prompts/{name}.md`, parse frontmatter, return (meta, body).
 
-    Cached because prompt files are static during a process's lifetime. To
-    pick up edits, restart the process — same as how config env vars work.
+    The result is cached per prompt name. The cache entry is invalidated when:
+      - the file's mtime changes (edit picked up immediately on the next call), OR
+      - PROMPT_CACHE_TTL_SECONDS have elapsed since the last load.
+    Thread-safe: a lock guards the cache dict so concurrent agent tasks don't
+    race on the same entry during a reload.
     """
     path = PROMPTS_DIR / f"{name}.md"
     if not path.exists():
         raise KeyError(f"Prompt {name!r} not found at {path}")
-    text = path.read_text(encoding="utf-8")
-    meta, body = _parse_frontmatter(text)
-    if "version" not in meta:
-        # Fail fast: the version is part of the prompt's contract. Missing
-        # means an incomplete edit, not a default-to-something situation.
-        raise ValueError(
-            f"Prompt {name!r} at {path} is missing a `version:` field in "
-            f"its frontmatter. Add a `---\\nversion: N\\n---` block at the top."
-        )
-    return meta, body
+
+    current_mtime = path.stat().st_mtime
+    now = time.monotonic()
+
+    with _cache_lock:
+        entry = _cache.get(name)
+        if entry is not None:
+            age = now - entry.loaded_at
+            if entry.mtime == current_mtime and age < PROMPT_CACHE_TTL_SECONDS:
+                return entry.meta, entry.body
+
+        # Cache miss, mtime changed, or TTL expired — reload from disk.
+        text = path.read_text(encoding="utf-8")
+        meta, body = _parse_frontmatter(text)
+        if "version" not in meta:
+            # Fail fast: the version is part of the prompt's contract.
+            raise ValueError(
+                f"Prompt {name!r} at {path} is missing a `version:` field in "
+                f"its frontmatter. Add a `---\\nversion: N\\n---` block at the top."
+            )
+        _cache[name] = _CacheEntry(meta=meta, body=body, mtime=current_mtime)
+        return meta, body
+
+
+def bust_cache(name: str | None = None) -> None:
+    """
+    Force the next `_load` call to re-read from disk.
+
+    Pass a prompt name to bust a single entry, or omit (``None``) to clear
+    all entries. Useful in tests and during development when you want to
+    guarantee a fresh read without waiting for the TTL.
+    """
+    with _cache_lock:
+        if name is None:
+            _cache.clear()
+        else:
+            _cache.pop(name, None)
 
 
 def get_prompt(name: str, /, **variables: object) -> str:
@@ -172,4 +234,8 @@ def render_tool_catalog(tools: Iterable[BaseTool]) -> str:
         lines.append(f"  {prefix}_*   — namespace")
         lines.append(f"             {', '.join(names)}")
         lines.append("")
+
+    if lines:
+        log.info("Rendered tool catalog:\n%s", "\n".join(lines))
+
     return "\n".join(lines).rstrip()

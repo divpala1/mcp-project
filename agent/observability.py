@@ -31,7 +31,23 @@ def setup_tracing() -> None:
     import time (via the LangSmith client). Setting them here is
     effectively a last-chance override — fine because we call this
     before any LangChain object is constructed.
+
+    Also ensures the root logger is configured at INFO when this is
+    called from a non-CLI entry point (e.g. uvicorn). `basicConfig` is a
+    no-op if handlers already exist, so it won't override uvicorn's own
+    logging setup — but it *will* set the level on uvicorn's existing
+    root handler if one was installed. We call `logging.root.setLevel`
+    explicitly to cover that case.
     """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+    )
+    logging.root.setLevel(logging.INFO)
+    # Quiet noisy third-party loggers regardless of entry point.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("mcp").setLevel(logging.WARNING)
+
     if not settings.langsmith_api_key:
         log.info("LANGSMITH_API_KEY not set — tracing disabled.")
         return
