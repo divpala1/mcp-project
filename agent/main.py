@@ -103,7 +103,7 @@ def main() -> None:
     # CLI-only convenience. In production the FastAPI endpoint forwards
     # the caller's Authorization header instead — there is no AGENT_AUTH_TOKEN
     # env var in that deployment.
-    token = os.getenv("AGENT_AUTH_TOKEN")
+    token = (os.getenv("AGENT_AUTH_TOKEN") or "").strip()
     if not token:
         print(
             "AGENT_AUTH_TOKEN env var is required for CLI use "

@@ -53,8 +53,8 @@ Cache strategy — TTL + mtime:
           resolution and for in-place overwrite tools that preserve mtime).
   - This means you can edit a .md file and the change takes effect on the
     next agent run — no restart needed.
-  - PROMPT_CACHE_TTL_SECONDS defaults to 30. Override at module level
-    (`agent.prompts.PROMPT_CACHE_TTL_SECONDS = N`) before the first call,
+  - PROMPT_CACHE_TTL_SECONDS defaults to 300 (5 minutes). Override at module
+    level (`agent.prompts.PROMPT_CACHE_TTL_SECONDS = N`) before the first call,
     or call `bust_cache()` to force an immediate reload of all entries.
 
 # TODO(future): when MCP `prompts` capability lands, the registry can grow
@@ -223,8 +223,15 @@ def render_tool_catalog(tools: Iterable[BaseTool]) -> str:
 
     Tools without an underscore in their name are grouped under `misc_*`.
     """
+    tool_list = list(tools)
+    if not tool_list:
+        # Callers should route to the no-tools prompt instead of rendering an
+        # empty catalog. Warn loudly so this mis-use is visible in logs.
+        log.warning("render_tool_catalog called with zero tools; returning empty string")
+        return ""
+
     groups: dict[str, list[str]] = {}
-    for tool in tools:
+    for tool in tool_list:
         prefix = tool.name.split("_", 1)[0] if "_" in tool.name else "misc"
         groups.setdefault(prefix, []).append(tool.name)
 
@@ -235,7 +242,5 @@ def render_tool_catalog(tools: Iterable[BaseTool]) -> str:
         lines.append(f"             {', '.join(names)}")
         lines.append("")
 
-    if lines:
-        log.info("Rendered tool catalog:\n%s", "\n".join(lines))
-
+    log.info("Rendered tool catalog:\n%s", "\n".join(lines))
     return "\n".join(lines).rstrip()

@@ -49,8 +49,8 @@ class AgentConfig(BaseSettings):
     # setting their own env vars OR by passing `mcp_servers=` directly to
     # `run_agent()` (see core.py). This is the only place names like "rag"
     # / "notes" appear — everywhere else operates on a generic dict.
-    rag_mcp_url: str = "http://127.0.0.1:8000/mcp/sse"
-    notes_mcp_url: str = "http://127.0.0.1:8001/mcp/sse"
+    rag_mcp_url: str = ""
+    notes_mcp_url: str = ""
 
     # ── Observability (optional — safe defaults) ───────────────────────────
     langsmith_api_key: str | None = None
@@ -69,7 +69,12 @@ def default_mcp_servers() -> dict[str, McpServerSpec]:
     re-evaluable in tests that monkey-patch `settings`, and avoids
     surprising people who change env between imports.
     """
-    return {
-        "rag":   {"url": settings.rag_mcp_url,   "transport": "sse"},
-        "notes": {"url": settings.notes_mcp_url, "transport": "sse"},
-    }
+    mcp_servers = {}
+
+    if settings.rag_mcp_url:
+        mcp_servers["rag"] = {"url": settings.rag_mcp_url, "transport": "sse"}
+
+    if settings.notes_mcp_url:
+        mcp_servers["notes"] = {"url": settings.notes_mcp_url, "transport": "sse"}
+
+    return mcp_servers

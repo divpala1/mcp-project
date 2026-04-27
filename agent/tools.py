@@ -88,10 +88,25 @@ async def load_tools(client: MultiServerMCPClient) -> list[BaseTool]:
     Namespacing (docs_* / notes_*) keeps names unique — we did it at the
     server side in Stages 2 and 3, so no disambiguation work here.
     """
-    tools = await client.get_tools()
-    log.info(
-        "Loaded %d MCP tools: %s",
-        len(tools),
-        ", ".join(t.name for t in tools),
-    )
+    try:
+        tools = await client.get_tools()
+    except Exception as exc:
+        # Surface which URLs were configured so the user knows where to look.
+        urls = [cfg.get("url", "<unknown>") for cfg in client.connections.values()]
+        log.error(
+            "Failed to load MCP tools from %s: %s",
+            ", ".join(urls) if urls else "<no servers>",
+            exc,
+            exc_info=True,
+        )
+        raise
+
+    if not tools:
+        log.warning("MCP client returned zero tools — agent will run toolless.")
+    else:
+        log.info(
+            "Loaded %d MCP tools: %s",
+            len(tools),
+            ", ".join(t.name for t in tools),
+        )
     return tools

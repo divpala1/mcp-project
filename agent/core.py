@@ -90,19 +90,54 @@ async def run_agent(
     try:
         llm = get_llm()  # cached after first call
         servers = mcp_servers if mcp_servers is not None else default_mcp_servers()
-        client = build_mcp_client(servers, auth_token=auth_token)
-        tools = await load_tools(client)
 
-        # Render the system prompt with the tool catalog discovered at
-        # runtime. This keeps the prompt's tool list in lockstep with the
-        # actual tools — adding a server-side @mcp.tool() automatically
-        # surfaces it to the LLM here, no agent-side edit required.
-        system_prompt = get_prompt(
-            "system",
-            tool_catalog=render_tool_catalog(tools),
-        )
+        # Tool loading: two distinct failure modes, both degrade gracefully.
+        #
+        # 1. No servers configured — not an error, just an unconfigured deployment.
+        #    The LLM is told no tools are connected; it answers from knowledge.
+        #
+        # 2. Servers configured but unreachable / erroring — a real problem the
+        #    user should know about. We catch it here so the LLM (not a raw
+        #    traceback) delivers the message. load_tools() already logs the
+        #    offending URL before re-raising, so the full detail is in the logs.
+        notools_reason: str | None = None
+        if not servers:
+            log.warning(
+                "No MCP servers configured. Set RAG_MCP_URL / NOTES_MCP_URL in .env "
+                "or pass mcp_servers= to run_agent(). Agent will run without tools."
+            )
+            notools_reason = "No tools are connected to this agent."
+            tools: list = []
+        else:
+            client = build_mcp_client(servers, auth_token=auth_token)
+            try:
+                tools = await load_tools(client)
+            except Exception as exc:
+                # Log at ERROR (this is unexpected) but don't propagate — let
+                # the LLM explain the situation to the user instead.
+                log.error("Tool load failed; running without tools: %s", exc)
+                notools_reason = (
+                    "The tool servers configured for this session could not be reached "
+                    "and no tools are available. There may be a connectivity or "
+                    "configuration issue. Let the user know so they can investigate."
+                )
+                tools = []
+
+        # Select the system prompt based on whether any tools loaded.
+        # When tools are available, the catalog is rendered into the template
+        # so the LLM sees exactly what it can call — adding a server-side
+        # @mcp.tool() automatically surfaces here with no agent-side edit.
+        # When no tools loaded, a minimal no-tool prompt is used — the full
+        # tool-guidance sections would only pollute the context window.
+        if tools:
+            prompt_name = "system"
+            system_prompt = get_prompt("system", tool_catalog=render_tool_catalog(tools))
+        else:
+            prompt_name = "system_notools"
+            system_prompt = get_prompt("system_notools", reason=notools_reason)
+
         agent = build_agent(llm, tools, system_prompt=system_prompt)
-        log.info("Agent compiled with %d tools", len(tools))
+        log.info("Agent compiled with %d tools, prompt=%s", len(tools), prompt_name)
 
         # Tag every span in this run with the prompt version. LangSmith
         # records this as run metadata; you can group/filter runs by it
@@ -111,7 +146,7 @@ async def run_agent(
         # prompt's .md file.
         run_config = {
             "metadata": {
-                "prompt_version": f"system@{get_prompt_version('system')}",
+                "prompt_version": f"{prompt_name}@{get_prompt_version(prompt_name)}",
             },
         }
 
@@ -124,14 +159,29 @@ async def run_agent(
             version="v2",
             config=run_config,
         ):
-            kind = event["event"]
+            kind = event.get("event")
+            if kind is None:
+                log.debug("Skipping event with no 'event' key: %r", event)
+                continue
+
             if kind == "on_chat_model_stream":
                 chunk = event["data"]["chunk"]
                 # chunk.content is str on most providers; Anthropic-style
-                # providers return a list of content blocks. Normalize.
-                text = chunk.content if isinstance(chunk.content, str) else "".join(
-                    b.get("text", "") for b in chunk.content if isinstance(b, dict)
-                )
+                # providers return a list of content blocks. Normalize both.
+                content = chunk.content
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, list):
+                    parts = []
+                    for block in content:
+                        if isinstance(block, dict) and "text" in block:
+                            parts.append(block["text"])
+                        elif not isinstance(block, dict):
+                            log.debug("Skipped non-dict content block: %r", block)
+                    text = "".join(parts)
+                else:
+                    log.warning("Unexpected chunk.content type %s; skipping", type(content).__name__)
+                    text = ""
                 if text:
                     yield {"type": "token", "text": text}
             elif kind == "on_tool_start":
