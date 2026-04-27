@@ -21,12 +21,10 @@ from langchain_core.language_models import BaseChatModel
 from agent.config import settings
 
 
-# Memoized: the LLM client has no per-user state and is safe to share across
-# requests / threads. One instance per process — avoids re-running the
-# provider import + client init on every FastAPI request without needing
-# lifespan plumbing. CLI and FastAPI hit the same cached instance.
-@lru_cache(maxsize=1)
-def get_llm() -> BaseChatModel:
+# Memoized by (provider, model, enable_thinking) — at most 2 live instances
+# (thinking on/off). Bools are hashable so lru_cache works fine.
+@lru_cache(maxsize=2)
+def get_llm(enable_thinking: bool = False) -> BaseChatModel:
     provider = settings.llm_provider.lower()
 
     if provider == "groq":
@@ -35,6 +33,9 @@ def get_llm() -> BaseChatModel:
                 "LLM_PROVIDER=groq requires GROQ_API_KEY in .env"
             )
         from langchain_groq import ChatGroq
+        # Groq has no extended-thinking parameter; enable_thinking is silently
+        # ignored. Groq reasoning models (deepseek-r1, qwq) think internally
+        # and don't need a separate flag.
         return ChatGroq(
             model=settings.llm_model,
             api_key=settings.groq_api_key,
@@ -49,6 +50,18 @@ def get_llm() -> BaseChatModel:
                 "LLM_PROVIDER=anthropic requires ANTHROPIC_API_KEY in .env"
             )
         from langchain_anthropic import ChatAnthropic
+        if enable_thinking:
+            # Anthropic extended thinking constraints:
+            #   • temperature must be 1 (API rejects other values)
+            #   • max_tokens must exceed budget_tokens (we add headroom)
+            budget = settings.thinking_budget_tokens
+            return ChatAnthropic(
+                model=settings.llm_model,
+                api_key=settings.anthropic_api_key,
+                temperature=1,
+                max_tokens=budget + 4096,
+                thinking={"type": "enabled", "budget_tokens": budget},
+            )
         return ChatAnthropic(
             model=settings.llm_model,
             api_key=settings.anthropic_api_key,
@@ -57,6 +70,7 @@ def get_llm() -> BaseChatModel:
 
     if provider == "ollama":
         from langchain_ollama import ChatOllama
+        # Ollama has no extended-thinking flag; enable_thinking is ignored.
         return ChatOllama(
             model=settings.llm_model,
             base_url=settings.ollama_base_url,

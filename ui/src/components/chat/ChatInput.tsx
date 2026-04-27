@@ -1,24 +1,26 @@
 import { useState, useRef, useCallback } from 'react';
-import { Send, Square } from 'lucide-react';
+import { Send, Square, Brain } from 'lucide-react';
 
 interface ChatInputProps {
-  onSend: (prompt: string) => void;
+  onSend: (prompt: string, enableThinking: boolean) => void;
   onCancel: () => void;
   isStreaming: boolean;
   disabled?: boolean;
+  enableThinking: boolean;
+  onToggleThinking: () => void;
 }
 
-export default function ChatInput({ onSend, onCancel, isStreaming, disabled }: ChatInputProps) {
+export default function ChatInput({ onSend, onCancel, isStreaming, disabled, enableThinking, onToggleThinking }: ChatInputProps) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed || isStreaming || disabled) return;
-    onSend(trimmed);
+    onSend(trimmed, enableThinking);
     setValue('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-  }, [value, isStreaming, disabled, onSend]);
+  }, [value, isStreaming, disabled, onSend, enableThinking]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -60,6 +62,22 @@ export default function ChatInput({ onSend, onCancel, isStreaming, disabled }: C
         />
 
         <button
+          type="button"
+          onClick={onToggleThinking}
+          disabled={isStreaming}
+          className={[
+            'flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150',
+            enableThinking
+              ? 'bg-violet-600/20 text-violet-400 ring-1 ring-violet-600/40'
+              : 'text-canvas-text-dim hover:text-canvas-text-subtle hover:bg-canvas-overlay',
+            isStreaming ? 'opacity-40 cursor-not-allowed' : '',
+          ].join(' ')}
+          title={enableThinking ? 'Think mode on — click to disable' : 'Enable think mode for this message'}
+        >
+          <Brain size={14} />
+        </button>
+
+        <button
           onClick={isStreaming ? onCancel : handleSend}
           disabled={!isStreaming && !canSend}
           className={[
@@ -78,7 +96,10 @@ export default function ChatInput({ onSend, onCancel, isStreaming, disabled }: C
 
       <p className="text-[10px] text-canvas-text-dim mt-1.5 px-1">
         <span className="font-mono">↵</span> to send ·{' '}
-        <span className="font-mono">⇧↵</span> for newline
+        <span className="font-mono">⇧↵</span> for newline ·{' '}
+        <span className={enableThinking ? 'text-violet-400' : ''}>
+          think {enableThinking ? 'on' : 'off'}
+        </span>
       </p>
     </div>
   );

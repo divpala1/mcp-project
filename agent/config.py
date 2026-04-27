@@ -11,10 +11,15 @@ What this file owns vs. what it doesn't:
     credentials, observability). Plus the env-driven *default* MCP server
     list, exposed via `default_mcp_servers()`.
 
-    NOT owned: anything per-request. The bearer token used to authenticate
-    against MCP servers is now a per-request value passed to `run_agent()`
-    — production callers forward the user's `Authorization` header through;
-    the CLI reads `AGENT_AUTH_TOKEN` from env on its own (see agent/main.py).
+    NOT owned: anything per-request. The user's bearer token (which
+    identifies the *caller* to user-aware servers like our RAG/notes
+    backends) is a per-request value passed to `run_agent()` — production
+    callers forward the user's `Authorization` header through; the CLI
+    reads `AGENT_AUTH_TOKEN` from env on its own (see agent/main.py).
+
+    Static service credentials (e.g. a GitHub PAT used by the GitHub MCP
+    server) ARE owned here — they're deployment-level, not per-request.
+    They're carried on the McpServerSpec via `static_token`.
 """
 from __future__ import annotations
 
@@ -23,12 +28,37 @@ from typing import TypedDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class McpServerSpec(TypedDict):
-    """Minimal shape passed to `build_mcp_client`. Only fields the agent
-    cares about — `headers` are added at client-construction time so they
-    can carry the per-request bearer token."""
+class McpServerSpec(TypedDict, total=False):
+    """
+    Minimal shape passed to `build_mcp_client`. `total=False` because some
+    fields are per-server-conditional (e.g. only HTTP transports take a URL,
+    only servers with a service credential carry `static_token`).
+
+    Auth model:
+        Each MCP server picks its own auth strategy — there is no MCP-level
+        standard. We support the two patterns this project actually needs:
+
+        1. Per-request user token (default). When `static_token` is absent,
+           `build_mcp_client` injects the bearer token passed to
+           `run_agent()`. This is how rag/notes work: the token resolves to
+           {user_id, org_id} on the server side and Qdrant scopes by org.
+
+        2. Static service credential. When `static_token` is set, *that*
+           token is used as the bearer for this server, regardless of who
+           the user is. This is how third-party servers like GitHub MCP
+           work: they expect a service credential (a PAT) that the agent
+           holds in env, not a user identity token. The user's identity is
+           irrelevant to GitHub — the agent acts under one configured
+           service account.
+
+        `static_token` is stripped from the spec inside build_mcp_client
+        before the dict reaches `MultiServerMCPClient`, since the adapter
+        splats unknown keys as kwargs to the session creator and would
+        crash on it. See agent/tools.py.
+    """
     url: str
-    transport: str  # "sse"
+    transport: str  # "sse" | "streamable_http"
+    static_token: str  # static service credential; stripped before adapter sees it
 
 
 class AgentConfig(BaseSettings):
@@ -48,9 +78,27 @@ class AgentConfig(BaseSettings):
     # Defaults for the demo. Production deployments override either by
     # setting their own env vars OR by passing `mcp_servers=` directly to
     # `run_agent()` (see core.py). This is the only place names like "rag"
-    # / "notes" appear — everywhere else operates on a generic dict.
+    # / "notes" / "github" appear — everywhere else operates on a generic
+    # dict.
     rag_mcp_url: str = ""
     notes_mcp_url: str = ""
+
+    # ── GitHub MCP (https://github.com/github/github-mcp-server) ───────────
+    # Hosted endpoint provided by GitHub. Uses Streamable HTTP transport
+    # (the spec's newer replacement for SSE) and a GitHub PAT as bearer.
+    # The PAT is a *service credential* — the same token authenticates
+    # every user's request. This is fundamentally different from rag/notes,
+    # where the bearer carries the *user's* identity. See McpServerSpec
+    # docstring for the auth-model split this introduces.
+    github_mcp_url: str = "https://api.githubcopilot.com/mcp/"
+    github_pat: str | None = None
+
+    # ── Extended thinking (Anthropic only) ────────────────────────────────
+    # Token budget for internal reasoning when enable_thinking=True is sent
+    # per-request. Only applies when LLM_PROVIDER=anthropic. Anthropic
+    # requires temperature=1 and max_tokens >= budget when thinking is on;
+    # agent/llm.py enforces both constraints automatically.
+    thinking_budget_tokens: int = 10000
 
     # ── Observability (optional — safe defaults) ───────────────────────────
     langsmith_api_key: str | None = None
@@ -69,12 +117,22 @@ def default_mcp_servers() -> dict[str, McpServerSpec]:
     re-evaluable in tests that monkey-patch `settings`, and avoids
     surprising people who change env between imports.
     """
-    mcp_servers = {}
+    mcp_servers: dict[str, McpServerSpec] = {}
 
     if settings.rag_mcp_url:
         mcp_servers["rag"] = {"url": settings.rag_mcp_url, "transport": "sse"}
 
     if settings.notes_mcp_url:
         mcp_servers["notes"] = {"url": settings.notes_mcp_url, "transport": "sse"}
+
+    # GitHub only joins the set when a PAT is configured — without one the
+    # server would reject every call, so we'd rather omit it entirely than
+    # surface auth failures inside the agent loop.
+    if settings.github_pat:
+        mcp_servers["github"] = {
+            "url": settings.github_mcp_url,
+            "transport": "streamable_http",
+            "static_token": settings.github_pat,
+        }
 
     return mcp_servers

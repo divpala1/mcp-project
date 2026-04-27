@@ -9,7 +9,7 @@ export function useAgentStream() {
   const abortRef = useRef<AbortController | null>(null);
   const isStreaming = useStore((s) => s.messages.some((m) => m.isStreaming));
 
-  const sendMessage = useCallback(async (prompt: string) => {
+  const sendMessage = useCallback(async (prompt: string, enableThinking: boolean = false) => {
     // Access store actions via getState() so the callback has no stale-closure issues.
     const store = useStore.getState();
     const { authToken, apiBaseUrl } = store.settings;
@@ -33,7 +33,7 @@ export function useAgentStream() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`,
         },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, enable_thinking: enableThinking }),
         signal: abortRef.current.signal,
       });
 

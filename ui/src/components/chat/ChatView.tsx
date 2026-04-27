@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { AlertCircle, Trash2 } from 'lucide-react';
 import { useStore } from '../../store';
 import { useAgentStream } from '../../hooks/useAgentStream';
@@ -6,6 +7,7 @@ import ChatInput from './ChatInput';
 
 export default function ChatView() {
   const { sendMessage, cancel, isStreaming } = useAgentStream();
+  const [enableThinking, setEnableThinking] = useState(false);
   const messages = useStore((s) => s.messages);
   const clearMessages = useStore((s) => s.clearMessages);
   const setActiveSection = useStore((s) => s.setActiveSection);
@@ -73,6 +75,8 @@ export default function ChatView() {
         onCancel={cancel}
         isStreaming={isStreaming}
         disabled={!hasToken}
+        enableThinking={enableThinking}
+        onToggleThinking={() => setEnableThinking((v) => !v)}
       />
     </div>
   );

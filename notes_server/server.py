@@ -185,7 +185,7 @@ mcp = FastMCP("notes-server")
 # ── MCP tools ────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def notes_create(text: str) -> dict:
+async def create(text: str) -> dict:
     """
     Create a note in the calling org's workspace.
     Returns {id, text, created_at}.
@@ -195,7 +195,7 @@ async def notes_create(text: str) -> dict:
 
 
 @mcp.tool()
-async def notes_list() -> dict:
+async def list() -> dict:  # noqa: A001
     """List the calling org's notes, most recent first. Returns {notes, count}."""
     org_id = require_identity()["org_id"]
     notes = await asyncio.to_thread(_list, org_id)

@@ -55,6 +55,9 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 
 class ChatRequest(BaseModel):
     prompt: str
+    # Per-request opt-in to extended thinking. Only meaningful for
+    # LLM_PROVIDER=anthropic — other providers silently ignore it.
+    enable_thinking: bool = False
 
 
 def _extract_bearer(authorization: str | None) -> str:
@@ -78,7 +81,9 @@ def _extract_bearer(authorization: str | None) -> str:
     return token
 
 
-async def _sse_stream(prompt: str, auth_token: str) -> AsyncIterator[str]:
+async def _sse_stream(
+    prompt: str, auth_token: str, enable_thinking: bool
+) -> AsyncIterator[str]:
     """
     Convert AgentEvent dicts into SSE `data:` frames.
 
@@ -87,7 +92,7 @@ async def _sse_stream(prompt: str, auth_token: str) -> AsyncIterator[str]:
     in tool outputs). They get stringified rather than crashing the
     stream — verbose but safe.
     """
-    async for ev in run_agent(prompt, auth_token=auth_token):
+    async for ev in run_agent(prompt, auth_token=auth_token, enable_thinking=enable_thinking):
         yield f"data: {json.dumps(ev, default=str)}\n\n"
 
 
@@ -106,7 +111,7 @@ async def chat(
     """
     token = _extract_bearer(authorization)
     return StreamingResponse(
-        _sse_stream(req.prompt, token),
+        _sse_stream(req.prompt, token, req.enable_thinking),
         media_type="text/event-stream",
         headers={
             # Standard SSE hygiene: prevent buffering at any intermediate

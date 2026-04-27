@@ -66,6 +66,7 @@ async def run_agent(
     *,
     auth_token: str,
     mcp_servers: dict[str, McpServerSpec] | None = None,
+    enable_thinking: bool = False,
 ) -> AsyncIterator[AgentEvent]:
     """
     Run the agent for one turn and yield structured events.
@@ -80,6 +81,9 @@ async def run_agent(
             back to env-driven defaults via `default_mcp_servers()`.
             Production hosts that resolve servers per user/org pass a
             fully-formed dict here.
+        enable_thinking: When True, enables extended thinking for Anthropic
+            models (temperature=1, thinking budget applied). Has no effect
+            on Groq or Ollama providers — those are silently ignored.
 
     Yields:
         AgentEvent dicts in the order they occur. Always terminated by an
@@ -88,7 +92,7 @@ async def run_agent(
     setup_tracing()
 
     try:
-        llm = get_llm()  # cached after first call
+        llm = get_llm(enable_thinking=enable_thinking)
         servers = mcp_servers if mcp_servers is not None else default_mcp_servers()
 
         # Tool loading: two distinct failure modes, both degrade gracefully.
