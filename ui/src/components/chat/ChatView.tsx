@@ -14,27 +14,36 @@ export default function ChatView() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex-shrink-0 flex items-center justify-between px-5 py-3 border-b border-zinc-800 bg-zinc-900/40">
-        <div>
-          <h1 className="text-sm font-semibold text-zinc-200">Chat</h1>
-          <p className="text-[11px] mt-0.5">
-            {isStreaming ? (
-              <span className="text-blue-400 flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse inline-block" />
-                Agent is responding…
-              </span>
-            ) : (
-              <span className="text-zinc-600">Ready</span>
-            )}
-          </p>
+      <div className="flex-shrink-0 flex items-center justify-between px-5 py-3.5 border-b border-canvas-border bg-canvas-muted/60">
+        <div className="flex items-center gap-2.5">
+          {/* Status dot */}
+          <span
+            className={[
+              'w-2 h-2 rounded-full flex-shrink-0',
+              isStreaming
+                ? 'bg-violet-400 animate-pulse shadow-glow-sm'
+                : 'bg-canvas-border-strong',
+            ].join(' ')}
+          />
+          <div>
+            <h1 className="text-sm font-semibold text-canvas-text-bright leading-none">Chat</h1>
+            <p
+              className={[
+                'text-[11px] mt-0.5 transition-colors duration-300',
+                isStreaming ? 'text-violet-400' : 'text-canvas-text-dim',
+              ].join(' ')}
+            >
+              {isStreaming ? 'Agent is responding…' : 'Ready'}
+            </p>
+          </div>
         </div>
 
         {messages.length > 0 && (
           <button
             onClick={clearMessages}
-            className="flex items-center gap-1.5 text-xs text-zinc-600 hover:text-zinc-300 px-2 py-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+            className="flex items-center gap-1.5 text-xs text-canvas-text-dim hover:text-canvas-text-subtle px-2.5 py-1.5 rounded-lg hover:bg-canvas-overlay transition-all duration-150"
           >
-            <Trash2 size={13} />
+            <Trash2 size={12} />
             Clear
           </button>
         )}
@@ -42,13 +51,13 @@ export default function ChatView() {
 
       {/* Auth warning */}
       {!hasToken && (
-        <div className="flex-shrink-0 mx-5 mt-3 flex items-start gap-2.5 bg-amber-950/30 border border-amber-900/40 rounded-xl px-3.5 py-2.5 text-xs text-amber-500">
-          <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+        <div className="flex-shrink-0 mx-5 mt-3 flex items-start gap-2.5 bg-amber-950/10 border border-amber-900/20 rounded-xl px-3.5 py-2.5 text-xs text-amber-500/80 animate-fade-in">
+          <AlertCircle size={13} className="flex-shrink-0 mt-0.5 text-amber-500" />
           <span>
             No auth token configured.{' '}
             <button
               onClick={() => setActiveSection('settings')}
-              className="underline hover:text-amber-300 transition-colors"
+              className="underline underline-offset-2 hover:text-amber-400 transition-colors"
             >
               Open Settings
             </button>{' '}

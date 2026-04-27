@@ -37,45 +37,48 @@ export default function ChatInput({ onSend, onCancel, isStreaming, disabled }: C
   const canSend = value.trim().length > 0 && !isStreaming && !disabled;
 
   return (
-    <div className="flex-shrink-0 px-5 pb-5 pt-2">
-      <div className="flex items-end gap-2 bg-zinc-800/60 border border-zinc-700/60 rounded-2xl px-3.5 py-2.5 focus-within:border-zinc-600 transition-colors">
+    <div className="flex-shrink-0 px-5 pb-5 pt-3">
+      <div
+        className={[
+          'flex items-end gap-3 border rounded-2xl px-4 py-3 transition-all duration-200',
+          'bg-canvas-card shadow-card',
+          disabled
+            ? 'border-canvas-border opacity-60'
+            : 'border-canvas-border focus-within:border-violet-600/40 focus-within:shadow-glow-sm',
+        ].join(' ')}
+      >
         <textarea
           ref={textareaRef}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
           onInput={handleInput}
-          placeholder={
-            disabled
-              ? 'Configure auth token in Settings…'
-              : 'Message the agent… (Enter to send)'
-          }
+          placeholder={disabled ? 'Configure auth token in Settings…' : 'Message the agent…'}
           disabled={disabled || isStreaming}
           rows={1}
-          className="flex-1 bg-transparent text-sm text-zinc-100 placeholder-zinc-600 resize-none outline-none leading-relaxed disabled:opacity-40 min-h-[24px] max-h-[200px]"
+          className="flex-1 bg-transparent text-sm text-canvas-text placeholder-canvas-text-dim resize-none outline-none leading-relaxed disabled:opacity-50 min-h-[22px] max-h-[200px]"
         />
+
         <button
           onClick={isStreaming ? onCancel : handleSend}
           disabled={!isStreaming && !canSend}
           className={[
-            'flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all duration-100',
+            'flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150',
             isStreaming
-              ? 'bg-red-600 hover:bg-red-500 text-white'
+              ? 'bg-red-600/90 hover:bg-red-500 text-white'
               : canSend
-              ? 'bg-blue-600 hover:bg-blue-500 text-white'
-              : 'bg-zinc-700/60 text-zinc-600 cursor-not-allowed',
+              ? 'bg-violet-600 hover:bg-violet-500 text-white shadow-glow-sm'
+              : 'bg-canvas-overlay text-canvas-text-dim cursor-not-allowed',
           ].join(' ')}
-          title={isStreaming ? 'Cancel' : 'Send'}
+          title={isStreaming ? 'Cancel' : 'Send (Enter)'}
         >
-          {isStreaming ? (
-            <Square size={12} fill="currentColor" />
-          ) : (
-            <Send size={13} />
-          )}
+          {isStreaming ? <Square size={11} fill="currentColor" /> : <Send size={13} />}
         </button>
       </div>
-      <p className="text-[10px] text-zinc-700 mt-1.5 px-1">
-        Enter to send · Shift+Enter for newline
+
+      <p className="text-[10px] text-canvas-text-dim mt-1.5 px-1">
+        <span className="font-mono">↵</span> to send ·{' '}
+        <span className="font-mono">⇧↵</span> for newline
       </p>
     </div>
   );

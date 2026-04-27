@@ -3,31 +3,25 @@ import type { ReactNode } from 'react';
 import { Eye, EyeOff, Save, CheckCircle } from 'lucide-react';
 import { useStore } from '../../store';
 
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: ReactNode;
-}) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div>
-      <label className="block text-xs font-medium text-zinc-400 mb-1.5">{label}</label>
+      <label className="block text-xs font-medium text-canvas-text-subtle mb-1.5">{label}</label>
       {children}
-      {hint && <p className="text-[11px] text-zinc-600 mt-1.5 leading-relaxed">{hint}</p>}
+      {hint && (
+        <p className="text-[11px] text-canvas-text-dim mt-1.5 leading-relaxed">{hint}</p>
+      )}
     </div>
   );
 }
 
 function Card({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="mb-7">
-      <h2 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-2.5">
+    <section className="mb-6">
+      <h2 className="text-[9px] font-bold text-canvas-text-dim uppercase tracking-widest mb-2.5">
         {title}
       </h2>
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-4">
+      <div className="bg-canvas-card border border-canvas-border rounded-xl p-4 space-y-4 shadow-card">
         {children}
       </div>
     </section>
@@ -49,32 +43,43 @@ export default function SettingsView() {
     setTimeout(() => setSaved(false), 2000);
   };
 
+  const inputClass =
+    'flex-1 bg-transparent text-sm text-canvas-text placeholder-canvas-text-dim outline-none font-mono';
+
+  const wrapperClass = [
+    'flex items-center gap-2 bg-canvas-overlay border rounded-lg px-3 py-2.5 transition-colors duration-150',
+    'border-canvas-border focus-within:border-canvas-border-strong',
+  ].join(' ');
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="max-w-xl mx-auto px-6 py-8">
-        <h1 className="text-base font-semibold text-zinc-200 mb-0.5">Settings</h1>
-        <p className="text-xs text-zinc-600 mb-7">Authentication and connection configuration.</p>
+        <div className="mb-7">
+          <h1 className="text-base font-semibold text-canvas-text-bright tracking-tight mb-0.5">
+            Settings
+          </h1>
+          <p className="text-xs text-canvas-text-dim">
+            Authentication and connection configuration.
+          </p>
+        </div>
 
         <Card title="Authentication">
           <Field
             label="Bearer Token"
-            hint={
-              `Sent as the Authorization header to the agent API and forwarded verbatim to ` +
-              `MCP servers. Must match an entry in AUTH_TOKENS_JSON on the server.`
-            }
+            hint="Sent as the Authorization header to the agent API and forwarded to MCP servers. Must match an entry in AUTH_TOKENS_JSON on the server."
           >
-            <div className="flex items-center gap-2 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 focus-within:border-zinc-600 transition-colors">
+            <div className={wrapperClass}>
               <input
                 type={showToken ? 'text' : 'password'}
                 value={authToken}
                 onChange={(e) => setAuthToken(e.target.value)}
                 placeholder="tok_alice"
-                className="flex-1 bg-transparent text-sm text-zinc-100 placeholder-zinc-600 outline-none font-mono"
+                className={inputClass}
                 autoComplete="off"
               />
               <button
-                onClick={() => setShowToken(!showToken)}
-                className="text-zinc-600 hover:text-zinc-300 transition-colors"
+                onClick={() => setShowToken((v) => !v)}
+                className="text-canvas-text-dim hover:text-canvas-text-subtle transition-colors flex-shrink-0"
                 title={showToken ? 'Hide token' : 'Show token'}
               >
                 {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -88,29 +93,29 @@ export default function SettingsView() {
             label="Agent API Base URL"
             hint="Leave empty to proxy through Vite (default: http://127.0.0.1:8002). Set this when the agent runs on a custom host or port."
           >
-            <input
-              type="text"
-              value={apiBaseUrl}
-              onChange={(e) => setApiBaseUrl(e.target.value)}
-              placeholder="http://127.0.0.1:8002  (leave empty for Vite proxy)"
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-zinc-600 transition-colors font-mono"
-            />
+            <div className={wrapperClass}>
+              <input
+                type="text"
+                value={apiBaseUrl}
+                onChange={(e) => setApiBaseUrl(e.target.value)}
+                placeholder="http://127.0.0.1:8002  (leave empty for Vite proxy)"
+                className={inputClass}
+              />
+            </div>
           </Field>
         </Card>
 
-        {/* Future sections go here — e.g., LLM provider override, theme, etc. */}
-
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 pt-1">
           <button
             onClick={handleSave}
             disabled={!hasChanges && !saved}
             className={[
               'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150',
               saved
-                ? 'bg-emerald-700/80 text-white'
+                ? 'bg-emerald-700/70 text-emerald-100 border border-emerald-600/30'
                 : hasChanges
-                ? 'bg-blue-600 hover:bg-blue-500 text-white'
-                : 'bg-zinc-800 text-zinc-600 cursor-not-allowed',
+                ? 'bg-violet-600 hover:bg-violet-500 text-white shadow-glow-sm'
+                : 'bg-canvas-overlay text-canvas-text-dim cursor-not-allowed border border-canvas-border',
             ].join(' ')}
           >
             {saved ? (
@@ -125,8 +130,9 @@ export default function SettingsView() {
               </>
             )}
           </button>
+
           {hasChanges && !saved && (
-            <span className="text-xs text-zinc-600">Unsaved changes.</span>
+            <span className="text-xs text-canvas-text-dim">Unsaved changes</span>
           )}
         </div>
       </div>

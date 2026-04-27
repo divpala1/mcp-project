@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -18,23 +18,47 @@
   }
 
   body {
-    @apply bg-zinc-950 text-zinc-100 antialiased;
+    background-color: #06060f;
+    color: #d5d5ee;
+    @apply antialiased font-sans;
   }
 
+  /* Thin, refined scrollbar */
   ::-webkit-scrollbar {
-    width: 5px;
-    height: 5px;
+    width: 4px;
+    height: 4px;
   }
 
   ::-webkit-scrollbar-track {
-    @apply bg-transparent;
+    background: transparent;
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply bg-zinc-700 rounded-full;
+    background: #1e1e3a;
+    border-radius: 999px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-zinc-600;
+    background: #2e2e58;
+  }
+
+  /* Violet-tinted text selection */
+  ::selection {
+    background-color: rgba(124, 58, 237, 0.28);
+    color: #eeeef8;
+  }
+}
+
+@layer utilities {
+  /* Subtle noise texture on sidebar / panels */
+  .surface-noise {
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.025'/%3E%3C/svg%3E");
+  }
+
+  /* Glass morphism helper */
+  .glass {
+    background: rgba(20, 20, 40, 0.75);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
   }
 }
