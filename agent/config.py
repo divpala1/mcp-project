@@ -5,10 +5,30 @@ Mirrors the pattern in `mcp_server/core/config.py` — one class, validated
 at import, typed everywhere else. The *agent* has a larger surface than
 the server (LLM provider choice, multiple MCP endpoints, observability)
 so this file is a little fuller.
+
+What this file owns vs. what it doesn't:
+    Owned: deployment-level facts that don't vary per request (LLM choice,
+    credentials, observability). Plus the env-driven *default* MCP server
+    list, exposed via `default_mcp_servers()`.
+
+    NOT owned: anything per-request. The bearer token used to authenticate
+    against MCP servers is now a per-request value passed to `run_agent()`
+    — production callers forward the user's `Authorization` header through;
+    the CLI reads `AGENT_AUTH_TOKEN` from env on its own (see agent/main.py).
 """
 from __future__ import annotations
 
+from typing import TypedDict
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class McpServerSpec(TypedDict):
+    """Minimal shape passed to `build_mcp_client`. Only fields the agent
+    cares about — `headers` are added at client-construction time so they
+    can carry the per-request bearer token."""
+    url: str
+    transport: str  # "sse"
 
 
 class AgentConfig(BaseSettings):
@@ -25,13 +45,12 @@ class AgentConfig(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
 
     # ── MCP endpoints (C2b — multi-server) ─────────────────────────────────
+    # Defaults for the demo. Production deployments override either by
+    # setting their own env vars OR by passing `mcp_servers=` directly to
+    # `run_agent()` (see core.py). This is the only place names like "rag"
+    # / "notes" appear — everywhere else operates on a generic dict.
     rag_mcp_url: str = "http://127.0.0.1:8000/mcp/sse"
     notes_mcp_url: str = "http://127.0.0.1:8001/mcp/sse"
-
-    # Bearer token the agent sends to every MCP server. Must be a key in
-    # the server's AUTH_TOKENS_JSON. Same token works for both servers —
-    # that's the point of C1: auth is a transport-layer pattern, shared.
-    agent_auth_token: str = "tok_alice"
 
     # ── Observability (optional — safe defaults) ───────────────────────────
     langsmith_api_key: str | None = None
@@ -39,3 +58,18 @@ class AgentConfig(BaseSettings):
 
 
 settings = AgentConfig()
+
+
+def default_mcp_servers() -> dict[str, McpServerSpec]:
+    """
+    Env-driven default MCP server set used when `run_agent()` is called
+    without an explicit `mcp_servers` override.
+
+    Why a function (not a module-level constant): keeps the helper
+    re-evaluable in tests that monkey-patch `settings`, and avoids
+    surprising people who change env between imports.
+    """
+    return {
+        "rag":   {"url": settings.rag_mcp_url,   "transport": "sse"},
+        "notes": {"url": settings.notes_mcp_url, "transport": "sse"},
+    }

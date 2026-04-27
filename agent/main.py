@@ -1,37 +1,43 @@
 """
-Agent entrypoint.
+Agent CLI entrypoint.
 
-    python -m agent.main "your prompt here"
+    AGENT_AUTH_TOKEN=tok_alice python -m agent.main "your prompt here"
 
 For a full step-by-step explanation of this file and how all the agent modules
 connect, see agent/WALKTHROUGH.md.
 
+This file is a thin CLI wrapper around `agent.core.run_agent`. The real
+work — LLM init, MCP client, ReAct graph, streaming — lives in
+`agent/core.py`. Here we only:
+
+    1. Read prompt from argv and bearer token from env.
+    2. Iterate the structured `AgentEvent` stream.
+    3. Render each event to the terminal (emoji markers + token-by-token
+       text + tool call boundaries).
+
+The bearer token comes from `AGENT_AUTH_TOKEN` env var rather than from a
+flag because: (a) it's a credential, env is the right place; (b) it
+mirrors how the FastAPI host receives it (an `Authorization` header is
+just an env-var-shaped piece of identity for HTTP). In production this
+env var doesn't exist — the FastAPI endpoint forwards the user's actual
+header (see agent/api.py).
+
 What this file demonstrates (learning checkpoint #6 — streaming):
 
-    `astream_events(version="v2")` is the event bus LangGraph exposes.
-    It emits heterogeneous events as the graph runs:
-
-        on_chat_model_start      LLM call is starting
-        on_chat_model_stream     one chunk per token as the LLM generates
-        on_chat_model_end        LLM call finished (full message available)
-        on_tool_start            a ToolNode is invoking a tool
-        on_tool_end              the tool returned (or raised)
-        on_chain_start / _end    graph-node boundaries
-
-    In production UIs this is what drives the "thinking...", "using tool…",
-    and token-by-token rendering users see. Here we just print them —
-    replace `print` with websocket-push / SSE-yield for a real front-end.
+    `astream_events(version="v2")` is the event bus LangGraph exposes,
+    and `core.run_agent` translates it into a small set of
+    consumer-friendly `AgentEvent` dicts. That translation is what lets
+    CLI rendering and SSE streaming share the same upstream — every host
+    iterates the same event stream, only the rendering differs.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 
-from agent.agent import build_agent
-from agent.llm import get_llm
-from agent.observability import setup_tracing
-from agent.tools import build_mcp_client, load_tools
+from agent.core import run_agent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,57 +51,37 @@ logging.getLogger("mcp").setLevel(logging.WARNING)
 log = logging.getLogger("agent.main")
 
 
-async def run(prompt: str) -> None:
-    setup_tracing()
-
-    llm = get_llm()
-    log.info("LLM ready: %s", type(llm).__name__)
-
-    client = build_mcp_client()
-    tools = await load_tools(client)
-
-    agent = build_agent(llm, tools)
-    log.info("Agent compiled with %d tools", len(tools))
-
+async def _print_stream(prompt: str, auth_token: str) -> None:
     print()
     print("=" * 72)
     print(f"▶ USER: {prompt}")
     print("=" * 72)
     print()
 
-    # Track whether we're currently streaming assistant text, so we can
-    # render tool-call boundaries on their own lines without mid-token cuts.
+    # Track whether we're currently mid-text-stream. Lets us insert blank
+    # lines around tool boundaries without breaking a token mid-stream.
     in_text = False
 
-    async for event in agent.astream_events(
-        {"messages": [{"role": "user", "content": prompt}]},
-        version="v2",
-    ):
-        kind = event["event"]
-        if kind == "on_chat_model_stream":
-            chunk = event["data"]["chunk"]
-            # chunk.content is a string for most providers; some return lists
-            # of content blocks (Anthropic-style). Normalise to str.
-            text = chunk.content if isinstance(chunk.content, str) else "".join(
-                b.get("text", "") for b in chunk.content if isinstance(b, dict)
-            )
-            if text:
-                if not in_text:
-                    print("🤖 ", end="", flush=True)
-                    in_text = True
-                print(text, end="", flush=True)
-        elif kind == "on_tool_start":
+    async for event in run_agent(prompt, auth_token=auth_token):
+        kind = event["type"]
+        if kind == "token":
+            if not in_text:
+                print("🤖 ", end="", flush=True)
+                in_text = True
+            print(event["text"], end="", flush=True)
+        elif kind == "tool_start":
             if in_text:
                 print()
                 in_text = False
-            name = event.get("name", "<tool>")
-            args = event["data"].get("input", {})
-            print(f"⚙  {name}({_short(args)})")
-        elif kind == "on_tool_end":
-            name = event.get("name", "<tool>")
-            out = event["data"].get("output")
-            print(f"   → {_short(out)}")
+            print(f"⚙  {event['name']}({_short(event['args'])})")
+        elif kind == "tool_end":
+            print(f"   → {_short(event['output'])}")
             print()
+        elif kind == "error":
+            if in_text:
+                print()
+                in_text = False
+            print(f"⚠  ERROR: {event['message']}", file=sys.stderr)
 
     print()
     print("=" * 72)
@@ -113,7 +99,20 @@ def main() -> None:
         print('usage: python -m agent.main "your prompt"', file=sys.stderr)
         sys.exit(2)
     prompt = " ".join(sys.argv[1:])
-    asyncio.run(run(prompt))
+
+    # CLI-only convenience. In production the FastAPI endpoint forwards
+    # the caller's Authorization header instead — there is no AGENT_AUTH_TOKEN
+    # env var in that deployment.
+    token = os.getenv("AGENT_AUTH_TOKEN")
+    if not token:
+        print(
+            "AGENT_AUTH_TOKEN env var is required for CLI use "
+            "(must match a key in the MCP server's AUTH_TOKENS_JSON).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    asyncio.run(_print_stream(prompt, token))
 
 
 if __name__ == "__main__":

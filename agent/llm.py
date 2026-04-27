@@ -14,11 +14,18 @@ Why lazy imports inside each branch?
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
 from langchain_core.language_models import BaseChatModel
 
 from agent.config import settings
 
 
+# Memoized: the LLM client has no per-user state and is safe to share across
+# requests / threads. One instance per process — avoids re-running the
+# provider import + client init on every FastAPI request without needing
+# lifespan plumbing. CLI and FastAPI hit the same cached instance.
+@lru_cache(maxsize=1)
 def get_llm() -> BaseChatModel:
     provider = settings.llm_provider.lower()
 

@@ -16,7 +16,7 @@ Three independently-runnable components:
 |---|---|---|
 | **`rag-server`** ([`mcp_server/`](mcp_server/)) | RAG MCP server — ingest, chunk, embed, search documents. Qdrant-backed. Per-org tenant isolation via payload filter. | `8000` |
 | **`notes-server`** ([`notes_server/`](notes_server/)) | Tiny second MCP server — create/list personal notes. In-memory. Demonstrates multi-server aggregation and tool namespacing. | `8001` |
-| **`agent`** ([`agent/`](agent/)) | LangGraph ReAct agent. Connects to both MCP servers via SSE, aggregates tools, streams tokens. Provider-pluggable (Groq / Anthropic / Ollama) via one env var. | (CLI) |
+| **`agent`** ([`agent/`](agent/)) | LangGraph ReAct agent. Connects to both MCP servers via SSE, aggregates tools, streams events. Provider-pluggable (Groq / Anthropic / Ollama) via one env var. Runs as **CLI** (`python -m agent.main`) or **FastAPI service** (mount `agent.api.router` in any host). | CLI / `8002` |
 
 Supporting infrastructure:
 
@@ -27,10 +27,11 @@ Supporting infrastructure:
 ## Features
 
 - **Tenant isolation** — every Qdrant query filters by `org_id`; guessing another org's `document_id` returns "not found". Enforced at a single chokepoint in [`mcp_server/core/state.py`](mcp_server/core/state.py).
-- **Bearer-token auth** — transport-layer, `ContextVar`-scoped. Same token works across both MCP servers. Swagger UI "Authorize" button is wired up.
+- **Bearer-token auth, end-to-end** — the FastAPI surface forwards the caller's `Authorization` header straight through to MCP, so org-scoping holds across multiple users on a shared deployment. CLI uses `AGENT_AUTH_TOKEN` for the same plumbing in single-user mode.
+- **Embeddable agent** — `agent/` is a self-contained module. The framework-free `run_agent(...)` callable (in [`agent/core.py`](agent/core.py)) yields a structured event stream any host can consume; the optional `APIRouter` (in [`agent/api.py`](agent/api.py)) drops into any FastAPI app with one `include_router` call.
 - **Tool namespacing** — `docs_*` on the RAG server, `notes_*` on the notes server. No collisions when `MultiServerMCPClient` merges tool lists.
 - **Huge-data patterns** — pagination cursors, per-tool response-size caps, structured truncation with hints.
-- **Streaming** — token-by-token output via LangGraph's `astream_events`.
+- **Streaming** — token-by-token output via LangGraph's `astream_events`, surfaced as SSE for the FastAPI path and emoji-decorated stdout for the CLI.
 - **Provider-pluggable LLM** — `LLM_PROVIDER=groq|anthropic|ollama` in `.env`, nothing else changes.
 - **Observability** — optional LangSmith tracing; silently skipped if `LANGSMITH_API_KEY` is unset.
 - **Multi-agent ready** — the agent is a `CompiledStateGraph`, so a future supervisor can embed it as a sub-graph node without a rewrite.
@@ -97,7 +98,7 @@ source venv/bin/activate
 uvicorn notes_server.server:app --host 127.0.0.1 --port 8001
 ```
 
-### Terminal 3b — the agent
+### Terminal 3b — the agent (CLI)
 
 ```bash
 source venv/bin/activate
@@ -110,6 +111,89 @@ The agent will:
 3. Call `docs_search` (RAG).
 4. Call `notes_create` (notes).
 5. Stream a synthesised final answer token-by-token.
+
+The CLI reads its bearer token from `AGENT_AUTH_TOKEN` in `.env` — that's the dev-mode shortcut, not how production callers authenticate (see below).
+
+---
+
+## Running the agent as a FastAPI service
+
+The agent ships a ready-to-mount FastAPI router so it can be embedded in any host app — including, eventually, a separate production codebase. There's also a tiny standalone host ([`agent/app.py`](agent/app.py)) for end-to-end testing in this repo.
+
+### Standalone (3-line host, for testing)
+
+```bash
+source venv/bin/activate
+uvicorn agent.app:app --host 127.0.0.1 --port 8002
+```
+
+That boots a FastAPI app whose only route is `POST /agent/chat`, an SSE-streaming endpoint. Send a prompt with the caller's bearer token in the `Authorization` header:
+
+```bash
+curl -N -X POST http://127.0.0.1:8002/agent/chat \
+  -H "Authorization: Bearer tok_alice" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Search for qubit entanglement and add a note about it."}'
+```
+
+The response is a stream of `data: {...}\n\n` SSE frames, one per `AgentEvent`:
+
+| Event `type` | Other fields | When it fires |
+|---|---|---|
+| `token` | `text` | One per LLM token as it streams |
+| `tool_start` | `name`, `args` | Right before a tool is invoked |
+| `tool_end` | `name`, `output` | After the tool returns |
+| `error` | `message` | Anything raised during the run (auth rejection, LLM/network failure). The stream still terminates cleanly. |
+| `end` | — | Always last frame |
+
+OpenAPI docs at <http://127.0.0.1:8002/docs>.
+
+### Embedding in another FastAPI app
+
+The same router is what production hosts mount. Two patterns, depending on how much control the host needs:
+
+```python
+# 1. Drop-in mount — gets POST /agent/chat with the default contract.
+from fastapi import FastAPI
+from agent.api import router
+
+app = FastAPI()
+app.include_router(router)
+
+# 2. Custom endpoint — when you need different middleware, your own auth
+#    layer, custom request shape, or per-user MCP-server resolution.
+from agent import run_agent
+
+@app.post("/my-chat")
+async def chat(req: MyRequest, user: AuthenticatedUser = Depends(...)):
+    servers = await resolve_mcp_servers_for_user(user)  # production-side logic
+    async def stream():
+        async for ev in run_agent(req.prompt, auth_token=user.token, mcp_servers=servers):
+            yield format_however_you_want(ev)
+    return StreamingResponse(stream(), media_type="text/event-stream")
+```
+
+### Auth model
+
+| Caller | How the bearer token reaches MCP |
+|---|---|
+| **CLI** (`python -m agent.main`) | Reads `AGENT_AUTH_TOKEN` from env, passes to `run_agent(..., auth_token=...)`. |
+| **FastAPI (drop-in router)** | Reads `Authorization: Bearer <token>` header and forwards verbatim. |
+| **FastAPI (custom endpoint)** | Host extracts identity however it likes (header, JWT, session) and passes a token string to `run_agent(...)`. |
+
+The agent never validates the token itself — the MCP server (`mcp_server/auth.py`) is the single source of truth on identity. The agent only needs to forward whatever opaque string it's given.
+
+### Config: deployment-level vs. per-request
+
+The split is the same one production services tend to land on:
+
+| Layer | Where it lives | Examples |
+|---|---|---|
+| **Deployment-level** (env, set at startup) | [`agent/config.py`](agent/config.py) | `LLM_PROVIDER`, `LLM_MODEL`, API keys, LangSmith |
+| **Per-request** (function/endpoint inputs) | `run_agent(...)` args | `prompt`, `auth_token` |
+| **Hybrid** (env default + per-request override) | `run_agent(mcp_servers=...)` | The MCP server set. The drop-in router doesn't expose this — production hosts that need per-user resolution write a custom endpoint and pass the dict directly. |
+
+The endpoint deliberately does **not** accept `llm_provider`, `llm_model`, or arbitrary MCP URLs as request body fields — those would either leak deployment internals or invite SSRF. They stay on the server side.
 
 ---
 
@@ -180,9 +264,9 @@ Full reference in [`.env.example`](.env.example). Frequently-touched ones:
 | `GROQ_API_KEY` | _(unset)_ | Required if provider is `groq` |
 | `ANTHROPIC_API_KEY` | _(unset)_ | Required if provider is `anthropic` |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Used if provider is `ollama` |
-| `RAG_MCP_URL` | `http://127.0.0.1:8000/mcp/sse` | Where the agent connects for RAG tools |
-| `NOTES_MCP_URL` | `http://127.0.0.1:8001/mcp/sse` | Where the agent connects for notes tools |
-| `AGENT_AUTH_TOKEN` | `tok_alice` | Bearer token the agent sends (must exist in `AUTH_TOKENS_JSON`) |
+| `RAG_MCP_URL` | `http://127.0.0.1:8000/mcp/sse` | Default RAG MCP endpoint (overridable per-call via `run_agent(mcp_servers=...)`) |
+| `NOTES_MCP_URL` | `http://127.0.0.1:8001/mcp/sse` | Default notes MCP endpoint (same override path) |
+| `AGENT_AUTH_TOKEN` | `tok_alice` | **CLI-only.** Bearer token used by `python -m agent.main`. Production callers forward `Authorization` headers and don't set this. |
 | `AUTH_TOKENS_JSON` | dev map | `{token: {user_id, org_id}}` resolved by both servers |
 | `QDRANT_URL` | `http://localhost:6333` | |
 | `QDRANT_COLLECTION` | `documents` | |
@@ -214,13 +298,17 @@ Full reference in [`.env.example`](.env.example). Frequently-touched ones:
 ├── notes_server/                Notes MCP server (port 8001)
 │   └── server.py                self-contained; auth logic duplicated, not imported
 │
-└── agent/                       LangGraph ReAct agent
-    ├── config.py                pydantic-settings (LLM, MCP URLs, observability)
-    ├── llm.py                   get_llm() factory (groq | anthropic | ollama)
-    ├── tools.py                 MultiServerMCPClient + session-lifecycle notes
+└── agent/                       LangGraph ReAct agent (CLI + embeddable FastAPI)
+    ├── __init__.py              public API: run_agent, AgentEvent, McpServerSpec
+    ├── config.py                pydantic-settings + default_mcp_servers() helper
+    ├── llm.py                   get_llm() factory (groq | anthropic | ollama), memoized
+    ├── tools.py                 build_mcp_client(servers, *, auth_token), per-request
     ├── observability.py         optional LangSmith
     ├── agent.py                 create_agent(...) -> CompiledStateGraph
-    └── main.py                  CLI entrypoint, astream_events loop
+    ├── core.py                  framework-free run_agent() async generator
+    ├── api.py                   optional FastAPI APIRouter (POST /agent/chat, SSE)
+    ├── app.py                   3-line standalone host for local testing
+    └── main.py                  CLI entrypoint — renders run_agent events to stdout
 ```
 
 ---
@@ -237,6 +325,8 @@ Full reference in [`.env.example`](.env.example). Frequently-touched ones:
 
 **Enable LangSmith tracing.** Add `LANGSMITH_API_KEY=...` to `.env`. Traces appear under the `mcp-agent-learning` project in LangSmith.
 
+**Embed the agent in another FastAPI app.** `from agent.api import router` then `app.include_router(router)` — that adds `POST /agent/chat`. Or `from agent import run_agent` and write your own endpoint when you need custom auth, request shape, or per-user MCP-server resolution. See the [Running the agent as a FastAPI service](#running-the-agent-as-a-fastapi-service) section.
+
 ---
 
 ## Troubleshooting
@@ -250,6 +340,8 @@ Full reference in [`.env.example`](.env.example). Frequently-touched ones:
 **Agent reports "unknown LLM_PROVIDER".** Check `.env`: value must be one of `groq`, `anthropic`, `ollama` (case-insensitive).
 
 **Agent can't reach an MCP server.** `curl http://127.0.0.1:8000/api/health` and `curl http://127.0.0.1:8001/api/health` — both must return `{"status":"ok"}` before the agent will successfully open SSE sessions.
+
+**`POST /agent/chat` returns 401 with no auth header.** Expected — the FastAPI surface requires `Authorization: Bearer <token>`. The agent only checks the header is present and well-formed; the MCP server is what actually validates the token, so an unknown token surfaces as an `error` event mid-stream rather than a 401.
 
 ---
 

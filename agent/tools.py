@@ -48,28 +48,36 @@ import logging
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from agent.config import settings
+from agent.config import McpServerSpec
 
 log = logging.getLogger(__name__)
 
 
-def build_mcp_client() -> MultiServerMCPClient:
+def build_mcp_client(
+    servers: dict[str, McpServerSpec],
+    *,
+    auth_token: str,
+) -> MultiServerMCPClient:
     """
-    Configure the client for both servers, injecting the bearer token
-    on every SSE handshake.
+    Configure the client for the given server set, injecting the caller's
+    bearer token on every SSE handshake.
+
+    Why both args are caller-supplied (not read from env):
+      - The bearer token must flow per-request so the user's identity
+        reaches MCP / Qdrant for org-scoped retrieval (CLAUDE.md C1).
+      - The server set is hybrid config: env defaults are assembled by
+        `default_mcp_servers()` for the simple case, but production
+        multi-tenant deployments resolve servers per user/org and pass
+        the dict in directly.
+      - Headers are baked into MultiServerMCPClient at construction in the
+        0.2.x adapter, so per-request auth → per-request client. That's
+        fine — client construction is cheap (no network I/O until the
+        first tool call).
     """
-    auth_header = {"Authorization": f"Bearer {settings.agent_auth_token}"}
+    auth_header = {"Authorization": f"Bearer {auth_token}"}
     return MultiServerMCPClient({
-        "rag": {
-            "url": settings.rag_mcp_url,
-            "transport": "sse",
-            "headers": auth_header,
-        },
-        "notes": {
-            "url": settings.notes_mcp_url,
-            "transport": "sse",
-            "headers": auth_header,
-        },
+        name: {**spec, "headers": auth_header}
+        for name, spec in servers.items()
     })
 
 
