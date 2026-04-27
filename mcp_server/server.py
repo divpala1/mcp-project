@@ -1,9 +1,6 @@
 """
 RAG MCP server — FastAPI + FastMCP in one process.
 
-For a full step-by-step explanation of how requests flow through this server
-and why each design choice was made, see mcp_server/WALKTHROUGH.md.
-
 Why one process?
     Both the REST layer (/api/*) and the MCP SSE transport (/mcp/sse) share
     the same `core.state` module — one Qdrant client, one embedding model.
@@ -64,9 +61,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="RAG MCP Server", version="0.2.0", lifespan=lifespan)
 
-# Register auth middleware. Starlette runs it before routing, so it protects
-# both FastAPI routes and the mounted MCP SSE sub-app transparently.
-app.middleware("http")(auth.auth_middleware)
+# Register auth middleware. add_middleware inserts it before the app, so it
+# protects both FastAPI routes and the mounted MCP SSE sub-app. We use the
+# pure ASGI class (not app.middleware("http")) because BaseHTTPMiddleware
+# buffers responses and breaks SSE streaming. See auth.AuthMiddleware for details.
+app.add_middleware(auth.AuthMiddleware)
 
 
 # ── MCP layer ─────────────────────────────────────────────────────────────────

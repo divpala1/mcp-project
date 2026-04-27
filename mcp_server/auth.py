@@ -8,7 +8,7 @@ uses a static {token → identity} map:
 
     1. Agent sends `Authorization: Bearer <token>` on every HTTP request
        (both the initial SSE GET and every subsequent POST to /mcp/messages/).
-    2. `auth_middleware` validates the token and resolves {user_id, org_id}.
+    2. `AuthMiddleware` validates the token and resolves {user_id, org_id}.
     3. Identity is stashed in a `ContextVar` for the duration of the request.
     4. Tool implementations call `require_identity()` to read it — no changes
        to their signatures, no plumbing `Request` through every function.
@@ -19,6 +19,14 @@ Why `ContextVar`?
       invoked from async tool wrappers still see the caller identity if
       they ever need it (we currently pass org_id explicitly for clarity).
 
+Why a pure ASGI middleware class (not BaseHTTPMiddleware)?
+    Starlette's BaseHTTPMiddleware buffers the response body, which breaks
+    SSE streaming. The MCP SSE endpoint keeps an HTTP connection open and
+    sends events incrementally — BaseHTTPMiddleware's body iterator gets
+    confused and raises an AssertionError on the second http.response.start
+    message. A pure ASGI middleware passes scope/receive/send through directly
+    without touching the response, so SSE works correctly.
+
 TODO(future): OAuth 2.1 flow — authorisation server, access tokens with
 `sub` and `org` claims, JWT verification instead of a dict lookup.
 """
@@ -26,9 +34,10 @@ from __future__ import annotations
 
 import contextvars
 import logging
+from typing import Callable
 
-from fastapi import Request
-from fastapi.responses import Response
+from starlette.responses import Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from mcp_server.core.config import settings
 
@@ -59,29 +68,52 @@ def resolve_token(token: str) -> dict[str, str] | None:
     return settings.auth_tokens.get(token)
 
 
-async def auth_middleware(request: Request, call_next):
+class AuthMiddleware:
     """
-    Runs before every request, including FastAPI routes *and* the mounted
-    MCP SSE sub-app — Starlette middleware wraps the whole app.
+    Pure ASGI middleware that validates bearer tokens without buffering responses.
+
+    Registered via app.add_middleware(AuthMiddleware) in server.py. Unlike
+    BaseHTTPMiddleware, this class never touches the response — it passes
+    scope/receive/send straight through to the next app, which means SSE
+    streaming connections work correctly.
     """
-    if request.url.path in UNAUTHED_PATHS:
-        return await call_next(request)
 
-    header = request.headers.get("Authorization", "")
-    if not header.startswith("Bearer "):
-        return Response("Unauthorized: missing bearer token", status_code=401)
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-    token = header.removeprefix("Bearer ")
-    identity = resolve_token(token)
-    if identity is None:
-        log.warning("Rejected unknown token (prefix=%s…)", token[:6])
-        return Response("Unauthorized: invalid token", status_code=401)
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            # Passthrough for WebSocket and lifespan events.
+            await self.app(scope, receive, send)
+            return
 
-    ctx_tok = current_identity.set(identity)
-    try:
-        return await call_next(request)
-    finally:
-        current_identity.reset(ctx_tok)
+        path = scope.get("path", "")
+        if path in UNAUTHED_PATHS:
+            await self.app(scope, receive, send)
+            return
+
+        # Headers in ASGI scope are a list of (name_bytes, value_bytes) tuples.
+        headers: dict[bytes, bytes] = dict(scope.get("headers", []))
+        auth_header = headers.get(b"authorization", b"").decode()
+
+        if not auth_header.startswith("Bearer "):
+            response = Response("Unauthorized: missing bearer token", status_code=401)
+            await response(scope, receive, send)
+            return
+
+        token = auth_header.removeprefix("Bearer ")
+        identity = resolve_token(token)
+        if identity is None:
+            log.warning("Rejected unknown token (prefix=%s…)", token[:6])
+            response = Response("Unauthorized: invalid token", status_code=401)
+            await response(scope, receive, send)
+            return
+
+        ctx_tok = current_identity.set(identity)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            current_identity.reset(ctx_tok)
 
 
 def require_identity() -> dict[str, str]:
@@ -91,11 +123,11 @@ def require_identity() -> dict[str, str]:
     """
     ident = current_identity.get()
     if ident is None:
-        # If you hit this, either auth_middleware isn't registered or the
+        # If you hit this, either AuthMiddleware isn't registered or the
         # handler was invoked outside a request (e.g. unit test without
         # setting the ContextVar manually).
         raise RuntimeError(
-            "No identity in context — auth_middleware missing, or called "
+            "No identity in context — AuthMiddleware missing, or called "
             "outside an HTTP request?"
         )
     return ident
