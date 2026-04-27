@@ -56,6 +56,11 @@ The compiled graph implements the classic two-node loop:
 #   LLMToolSelectorMiddleware (tool retrieval — CLAUDE.md C2 TODO(future)),
 #   ToolCallLimitMiddleware / ModelCallLimitMiddleware (guardrails).
 #   Useful to know exists; don't pull any in yet.
+#
+# Prompt content lives in `agent/prompts/` (markdown files + a small
+# registry in `agent/prompts/__init__.py`). When MCP `prompts` capability
+# is wired up, that registry is where it slots in — `build_agent` itself
+# stays prompt-agnostic.
 """
 from __future__ import annotations
 
@@ -65,32 +70,21 @@ from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
 
-SYSTEM_PROMPT = """You are a helpful research assistant.
-
-You have tools in two namespaces:
-
-  docs_*   — a document corpus scoped to the caller's organisation
-             docs_ingest, docs_search, docs_list, docs_get, docs_stats
-
-  notes_*  — a personal notes workspace for the caller's organisation
-             notes_create, notes_list
-
-Rules:
-  1. If the user asks you to record, save, or remember something, use notes_create.
-  2. For questions about corpus contents, call docs_search before answering.
-     Do not fabricate content.
-  3. When a tool returns an error (e.g. {"error": "not_found"}), describe the
-     error to the user and suggest a next step rather than retrying blindly.
-  4. Prefer small, targeted calls: top_k=3-5 for docs_search, limit=20 for docs_list.
-"""
-
-
 def build_agent(
-    llm: BaseChatModel, tools: list[BaseTool],
+    llm: BaseChatModel,
+    tools: list[BaseTool],
+    *,
+    system_prompt: str,
 ) -> CompiledStateGraph:
     """
     Compile the ReAct graph. Returns a LangGraph `CompiledStateGraph` that
     the caller runs via `.astream_events(...)` for token-level streaming.
+
+    `system_prompt` is rendered by the caller (`agent/core.py`) using the
+    prompt registry — that's where runtime context like the discovered
+    MCP tool list becomes available for substitution. Keeping rendering
+    out of this function means the graph builder doesn't know or care
+    where prompts come from.
 
     `name="mcp-researcher"` labels this graph — when it's embedded as a
     sub-graph of a future supervisor, the name appears in traces and in
@@ -99,6 +93,6 @@ def build_agent(
     return create_agent(
         model=llm,
         tools=tools,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         name="mcp-researcher",
     )

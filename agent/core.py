@@ -33,6 +33,7 @@ from agent.agent import build_agent
 from agent.config import McpServerSpec, default_mcp_servers
 from agent.llm import get_llm
 from agent.observability import setup_tracing
+from agent.prompts import get_prompt, get_prompt_version, render_tool_catalog
 from agent.tools import build_mcp_client, load_tools
 
 log = logging.getLogger(__name__)
@@ -91,8 +92,28 @@ async def run_agent(
         servers = mcp_servers if mcp_servers is not None else default_mcp_servers()
         client = build_mcp_client(servers, auth_token=auth_token)
         tools = await load_tools(client)
-        agent = build_agent(llm, tools)
+
+        # Render the system prompt with the tool catalog discovered at
+        # runtime. This keeps the prompt's tool list in lockstep with the
+        # actual tools — adding a server-side @mcp.tool() automatically
+        # surfaces it to the LLM here, no agent-side edit required.
+        system_prompt = get_prompt(
+            "system",
+            tool_catalog=render_tool_catalog(tools),
+        )
+        agent = build_agent(llm, tools, system_prompt=system_prompt)
         log.info("Agent compiled with %d tools", len(tools))
+
+        # Tag every span in this run with the prompt version. LangSmith
+        # records this as run metadata; you can group/filter runs by it
+        # to compare behaviour across prompt revisions (e.g. system@v1
+        # vs system@v2). The version comes from the frontmatter in the
+        # prompt's .md file.
+        run_config = {
+            "metadata": {
+                "prompt_version": f"system@{get_prompt_version('system')}",
+            },
+        }
 
         # Track whether the previous emission was a streaming text chunk;
         # callers that render to a terminal use this to break lines around
@@ -101,6 +122,7 @@ async def run_agent(
         async for event in agent.astream_events(
             {"messages": [{"role": "user", "content": prompt}]},
             version="v2",
+            config=run_config,
         ):
             kind = event["event"]
             if kind == "on_chat_model_stream":
@@ -126,12 +148,31 @@ async def run_agent(
                 }
     except Exception as exc:
         # Surface errors as a structured event rather than letting the
-        # generator raise. The two failures most worth surfacing here:
+        # generator raise. The three failures most worth surfacing here:
         #   - MCP handshake / auth rejection (bad bearer token → 401)
         #   - LLM provider error (rate limit, bad credentials)
-        # In both cases the host (CLI / FastAPI) should display the
-        # message; a traceback in the SSE stream is not useful to a UI.
-        log.exception("Agent run failed")
-        yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+        #   - LLM tool-call validation (Groq's "Failed to call a function"
+        #     response — the offending generation lives in exc.body and is
+        #     the only useful thing to read; without it the message is
+        #     opaque). We pull it out for both the log and the SSE event.
+        body = getattr(exc, "body", None)
+        failed_generation = None
+        if isinstance(body, dict):
+            failed_generation = body.get("failed_generation")
+        if failed_generation:
+            log.exception(
+                "Agent run failed — provider rejected generation:\n%s",
+                failed_generation,
+            )
+            yield {
+                "type": "error",
+                "message": (
+                    f"{type(exc).__name__}: {exc}\n"
+                    f"failed_generation: {failed_generation}"
+                ),
+            }
+        else:
+            log.exception("Agent run failed")
+            yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
     finally:
         yield {"type": "end"}

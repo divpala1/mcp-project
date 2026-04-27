@@ -87,15 +87,20 @@ async def docs_ingest(title: str, content: str) -> dict:
 
 
 @mcp.tool()
-async def docs_search(query: str, top_k: int = 5) -> list[dict]:
+async def docs_search(query: str, top_k: int = 5) -> dict:
     """
     Search the calling org's corpus for chunks relevant to `query`.
-    Returns up to top_k results with {score, text, title, document_id, chunk_index}.
-    Each chunk's text is truncated to 500 chars (text_truncated flags this);
-    call docs_get for the full document.
+    Returns {results, count}. Each result has {score, text, title, document_id,
+    chunk_index}; text is truncated to 500 chars (text_truncated flags this).
+    Call docs_get for the full document.
     """
     org_id = auth.require_identity()["org_id"]
-    return await asyncio.to_thread(state.search_documents, query, org_id, top_k)
+    results = await asyncio.to_thread(state.search_documents, query, org_id, top_k)
+    # Wrap in a dict so the tool response is never a bare empty list.
+    # Groq rejects ToolMessage content=[] ("minimum number of items is 1");
+    # a dict is always non-empty at minimum {"results": [], "count": 0}.
+    # Same pattern as notes_server.notes_list.
+    return {"results": results, "count": len(results)}
 
 
 @mcp.tool()
