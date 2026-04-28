@@ -118,6 +118,13 @@ class AgentConfig(BaseSettings):
     langsmith_api_key: str | None = None
     langsmith_project: str = "mcp-agent-learning"
 
+    # Langfuse tracing — opt-in, same pattern as LangSmith. Both can run
+    # simultaneously; set whichever keys you have. Self-hosted deployments
+    # override langfuse_host to their own endpoint.
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_host: str = "https://cloud.langfuse.com"
+
 
 settings = AgentConfig()
 

@@ -75,6 +75,7 @@ dependencies = [
 # Keep it off the critical path so `pip install -e .` stays minimal.
 observability = [
     "langsmith>=0.7.0",
+    "langfuse>=2.0.0",
 ]
 
 [build-system]

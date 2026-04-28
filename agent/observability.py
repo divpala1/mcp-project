@@ -1,12 +1,15 @@
 """
-Optional LangSmith tracing.
+Optional observability backends: LangSmith and Langfuse.
 
-Design stance: observability is *opt-in*, not a hard dependency. If
-`LANGSMITH_API_KEY` is unset, this module is a no-op — the agent runs
-fine without it. Flip the key on and every LLM call + tool call shows
-up as a span in the LangSmith UI, which is invaluable for:
-  - Debugging "the LLM keeps calling the wrong tool" — you can see the
-    tool schema it was given.
+Design stance: both are *opt-in*, not hard dependencies. The agent runs
+fine with neither key set. Enable one or both — they work simultaneously
+because they use independent mechanisms:
+  - LangSmith captures spans automatically via env vars read by langchain-core.
+  - Langfuse captures spans via a CallbackHandler injected into run_config.
+
+Either backend is invaluable for:
+  - Debugging "the LLM keeps calling the wrong tool" — you see the exact
+    tool schema it received.
   - Catching ReAct loop stalls (infinite tool calls, unexpected halt).
   - Comparing runs when you swap LLM_PROVIDER — side-by-side traces.
 
@@ -19,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 from agent.config import settings
 
@@ -49,9 +53,54 @@ def setup_tracing() -> None:
     logging.getLogger("mcp").setLevel(logging.WARNING)
 
     if not settings.langsmith_api_key:
-        log.info("LANGSMITH_API_KEY not set — tracing disabled.")
+        log.info("LANGSMITH_API_KEY not set — LangSmith tracing disabled.")
         return
     os.environ["LANGSMITH_TRACING"] = "true"
     os.environ["LANGSMITH_API_KEY"] = settings.langsmith_api_key
     os.environ["LANGSMITH_PROJECT"] = settings.langsmith_project
     log.info("LangSmith tracing enabled: project=%s", settings.langsmith_project)
+
+
+def build_langfuse_callback() -> Any | None:
+    """
+    Return a Langfuse CallbackHandler for LangChain/LangGraph, or None if
+    Langfuse credentials are not configured.
+
+    Why a callback (not env vars like LangSmith)?
+        Langfuse's LangChain integration uses a per-run callback object rather
+        than global env vars. This means it captures spans from the exact
+        graph invocation it is passed to, with no cross-contamination between
+        concurrent requests — a cleaner model for async servers.
+
+    The returned handler is passed into run_config["callbacks"] in core.py.
+    LangGraph propagates it to every node automatically, so LLM calls, tool
+    calls, and the ReAct loop all appear as child spans under the same trace.
+
+    Lazy import: `langfuse` is an optional dependency. Importing at module
+    level would crash the agent on startup if the package is not installed.
+    We only reach this code path when both keys are set, so the user has
+    opted in and the package should be present.
+    """
+    if not (settings.langfuse_public_key and settings.langfuse_secret_key):
+        log.info("LANGFUSE_PUBLIC_KEY / SECRET_KEY not set — Langfuse tracing disabled.")
+        return None
+
+    try:
+        from langfuse import Langfuse  # type: ignore[import]
+        from langfuse.langchain import CallbackHandler  # type: ignore[import]
+    except ImportError:
+        log.warning(
+            "langfuse package not installed — Langfuse tracing disabled. "
+            "Run: pip install 'langfuse>=2.0.0'"
+        )
+        return None
+
+    # Langfuse v3: credentials belong on the Langfuse client, not CallbackHandler.
+    # CallbackHandler() takes no args — it picks up the already-initialized client.
+    Langfuse(
+        public_key=settings.langfuse_public_key,
+        secret_key=settings.langfuse_secret_key,
+        host=settings.langfuse_host,
+    )
+    log.info("Langfuse tracing enabled: host=%s", settings.langfuse_host)
+    return CallbackHandler()

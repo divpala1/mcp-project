@@ -32,7 +32,7 @@ from typing import Any, AsyncIterator, Literal, TypedDict
 from agent.agent import build_agent
 from agent.config import McpServerSpec, default_mcp_servers
 from agent.llm import get_llm
-from agent.observability import setup_tracing
+from agent.observability import build_langfuse_callback, setup_tracing
 from agent.prompts import get_prompt, get_prompt_version, render_tool_catalog
 from agent.toolset import compile_tools
 
@@ -127,10 +127,21 @@ async def run_agent(
         # to compare behaviour across prompt revisions (e.g. system@v1
         # vs system@v2). The version comes from the frontmatter in the
         # prompt's .md file.
+        #
+        # Callbacks: Langfuse uses a per-run CallbackHandler (unlike LangSmith
+        # which reads global env vars). Passing it here causes LangGraph to
+        # propagate it to every node automatically — LLM calls and tool calls
+        # all become child spans under the same trace, with no extra wiring.
+        callbacks = []
+        lf_callback = build_langfuse_callback()
+        if lf_callback:
+            callbacks.append(lf_callback)
+
         run_config = {
             "metadata": {
                 "prompt_version": f"{prompt_name}@{get_prompt_version(prompt_name)}",
             },
+            "callbacks": callbacks,
         }
 
         # Track whether the previous emission was a streaming text chunk;
