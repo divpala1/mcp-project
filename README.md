@@ -37,6 +37,7 @@ Supporting infrastructure:
 - **Bearer-token auth, end-to-end** — the FastAPI surface forwards the caller's `Authorization` header straight through to MCP, so org-scoping holds across multiple users on a shared deployment. CLI uses `AGENT_AUTH_TOKEN` for the same plumbing in single-user mode.
 - **Embeddable agent** — `agent/` is a self-contained module. The framework-free `run_agent(...)` callable (in [`agent/core.py`](agent/core.py)) yields a structured event stream any host can consume; the optional `APIRouter` (in [`agent/api.py`](agent/api.py)) drops into any FastAPI app with one `include_router` call.
 - **External/hosted MCP servers** — GitHub's MCP and LangChain's docs MCP are pre-wired alongside the local servers. Demonstrates the `static_token` pattern (service credential held in env, same for every user) sitting next to the per-request user-token pattern (`rag`/`notes`). See [`agent/config.py`](agent/config.py) for the `McpServerSpec` auth-model docstring.
+- **Local tool registry** — hand-written Python tools register via [`agent/registry.py`](agent/registry.py) and surface to the LLM alongside MCP-loaded ones. Composition lives in [`agent/toolset.py`](agent/toolset.py) — the single seam where a future tool-finder layer (CLAUDE.md C2a) can rank/filter the merged catalog.
 - **Tool namespacing** — `docs_*` on the RAG server, `notes_*` on the notes server. No collisions when `MultiServerMCPClient` merges tool lists.
 - **Huge-data patterns** — pagination cursors, per-tool response-size caps, structured truncation with hints.
 - **Streaming** — token-by-token output via LangGraph's `astream_events`, surfaced as SSE for the FastAPI path and emoji-decorated stdout for the CLI.
@@ -328,6 +329,8 @@ Full reference in [`.env.example`](.env.example). Frequently-touched ones:
     ├── config.py                pydantic-settings + default_mcp_servers() helper
     ├── llm.py                   get_llm() factory (groq | anthropic | ollama), memoized
     ├── tools.py                 build_mcp_client(servers, *, auth_token), per-request
+    ├── registry.py              local tool registry: register(tool) / registered_tools()
+    ├── toolset.py               compile_tools() — merges MCP + registry tools (future tool-finder seam)
     ├── observability.py         optional LangSmith
     ├── agent.py                 create_agent(...) -> CompiledStateGraph
     ├── core.py                  framework-free run_agent() async generator
@@ -466,6 +469,22 @@ async for event in run_agent("Do something.", auth_token="tok_alice", mcp_server
 ```
 
 This is the recommended pattern for production endpoints that resolve the MCP server set dynamically per user.
+
+**Add a local Python tool (no MCP server needed).** Use the registry in [`agent/registry.py`](agent/registry.py):
+
+```python
+from datetime import datetime, timezone
+from langchain_core.tools import tool
+from agent.registry import register
+
+@register
+@tool
+def get_current_time() -> str:
+    """Return the current UTC time in ISO-8601."""
+    return datetime.now(timezone.utc).isoformat()
+```
+
+The tool is picked up automatically by [`agent/toolset.py`](agent/toolset.py)'s `compile_tools()` and surfaces alongside MCP-loaded tools in the LLM's tool catalog. Importing the module that calls `register(...)` (typically at agent startup, e.g. from `agent/main.py` or `agent/app.py`) is what triggers registration.
 
 **Edit the system prompt.** Open [`agent/prompts/system.md`](agent/prompts/system.md), change the text, and bump the `version:` integer in the frontmatter. The next process start picks it up (prompts are cached per-process, not per-request — restart uvicorn to reload when running as a service). The version number is recorded as `system@vN` in every LangSmith trace so you can compare prompt iterations across runs.
 

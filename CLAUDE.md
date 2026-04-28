@@ -329,6 +329,8 @@ project-root/
     ├── agent.py               # LangGraph graph builder
     ├── core.py                # Framework-free run_agent() engine
     ├── tools.py               # MCP client builder, session lifecycle, auth
+    ├── registry.py            # Local tool registry: register / registered_tools
+    ├── toolset.py             # compile_tools() — merges MCP + registry; future tool-finder seam
     ├── llm.py                 # get_llm() factory (groq | anthropic | ollama)
     ├── config.py              # pydantic-settings, default_mcp_servers()
     ├── observability.py       # Optional LangSmith tracing

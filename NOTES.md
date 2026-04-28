@@ -353,3 +353,68 @@ custom endpoint.
 - **C4 (provider swap)** — `thinking_budget_tokens` is Anthropic-specific; `llm.py`
   guards it behind `if provider == "anthropic":`, keeping the other provider branches
   clean.
+
+---
+
+## Stage 6 — Local Tool Registry + Tool Composition Seam (2026-04-28)
+
+### What landed
+
+- **`agent/registry.py`** — a tiny module-level dict of `name → BaseTool`. Public
+  API is three functions: `register(tool)` (works as a decorator on top of
+  `@tool`), `registered_tools()` (flat list), `unregister(name)` / `clear()`.
+  Re-registering an existing name logs a warning and replaces — chosen over a
+  hard error so dev hot-reload doesn't crash the process.
+- **`agent/toolset.py`** — `compile_tools(mcp_servers=..., auth_token=...)` is
+  the new single seam responsible for producing the final tool list. Pulls from
+  two sources: MCP servers (via `agent/tools.py`) and the local registry. Returns
+  `(tools, reason)` — `reason` is a human-readable string the no-tool prompt uses
+  to explain failure modes to the LLM. The function never re-raises, so a
+  flaky MCP server can't crash the streaming loop.
+- **`agent/core.py`** simplified: the inline 25-line MCP-loading block is now a
+  single `await compile_tools(...)` call. Behaviour is unchanged — same two
+  failure modes (no servers configured / load failed), same model-facing reasons.
+- All affected guide markdowns updated: `CLAUDE.md` (project layout), `README.md`
+  (project layout + feature list + how-to), `DRYRUN.md` (request trace),
+  `agent/WALKTHROUGH.md` (file map, step list, dependency diagram, Q&A),
+  `agent/prompts/WALKTHROUGH.md` (the `core.py` snippet at "How it hooks in").
+
+### Decisions worth remembering
+
+**Why two new files, not one.** `registry.py` and `toolset.py` have distinct
+responsibilities. The registry is a passive collection — modules anywhere in
+the codebase add to it at import time. `compile_tools` is an active orchestrator
+that mixes the registry with a network-bound MCP loader and (in future) a
+tool-finder. Keeping them separate means the registry has zero MCP/network
+imports and is safe to import from anywhere; `toolset.py` is the only thing
+that pulls in `langchain-mcp-adapters`.
+
+**Why `compile_tools` returns a reason instead of raising.** The previous
+inline implementation already swallowed MCP errors and turned them into
+`notools_reason`. Lifting that contract into the function signature
+(`tuple[list[BaseTool], str | None]`) makes the no-throw guarantee explicit.
+Callers don't need a `try` block; the streaming loop in `core.py` is simpler
+as a result.
+
+**Why the tool-finder seam lives in `compile_tools`, not as a wrapper around
+`run_agent`.** The finder needs the merged tool list (MCP + registry) to rank
+against the user's query. Putting it inside `compile_tools` means the rest of
+the codebase sees one filtered list and never has to know whether filtering
+happened. When the finder lands, the change is `tools = await
+finder.rank(tools, query, top_k=K)` — one line, in the marked spot.
+
+**Decorator API.** `register` returns the tool unchanged so it can stack on top
+of `@tool`. We validate that the input is a `BaseTool` (TypeError otherwise) so
+that `register(my_func)` (forgot the `@tool`) fails immediately instead of
+later when the LLM tries to bind a non-tool object.
+
+### Learning checkpoints surfaced
+
+- **C2a (tool explosion / future retrieval)** — `compile_tools` is now the
+  single, marked place where a tool-finder layer slots in. The shape stays
+  `list[BaseTool] -> list[BaseTool]`, so adding it doesn't ripple.
+- **Composition over coupling** — the previous code had `core.py` directly
+  calling `build_mcp_client` and `load_tools`. Now `core.py` knows nothing
+  about MCP; it asks `toolset` for tools. That's the same shape we'll want
+  when the agent grows new tool sources (e.g. plugin loaders, dynamically
+  fetched MCP catalogs).

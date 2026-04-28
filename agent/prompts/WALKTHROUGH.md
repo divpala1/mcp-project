@@ -157,19 +157,26 @@ Tools without an underscore in their name are grouped under `misc_*`.
 
 ## How it hooks into `core.py`
 
-The connection happens at the start of `run_agent()`, right after tool loading
-and before agent compilation:
+The connection happens at the start of `run_agent()`, right after tool
+composition and before agent compilation:
 
 ```python
 # agent/core.py (simplified)
-tools = await load_tools(client)                     # step 5
+tools, notools_reason = await compile_tools(            # step 4
+    mcp_servers=servers,
+    auth_token=auth_token,
+)
 
-system_prompt = get_prompt(                          # step 6
+system_prompt = get_prompt(                             # step 5
     "system",
     tool_catalog=render_tool_catalog(tools),
 )
-agent = build_agent(llm, tools, system_prompt=system_prompt)  # step 7
+agent = build_agent(llm, tools, system_prompt=system_prompt)  # step 6
 ```
+
+`compile_tools` (in [`agent/toolset.py`](../toolset.py)) merges MCP-loaded
+tools with locally-registered ones from [`agent/registry.py`](../registry.py)
+and is the seam where a future tool-finder layer would slot in.
 
 `build_agent` in `agent/agent.py` passes `system_prompt` straight through to
 `create_agent(system_prompt=...)`. The graph builder is prompt-agnostic — it

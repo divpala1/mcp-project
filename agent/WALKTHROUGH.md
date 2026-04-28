@@ -26,7 +26,9 @@ are thin renderers over the same event stream.
 ├──────────────────────────────────────────────┤
 │  agent/agent.py    build_agent(llm, tools, system_prompt) → CompiledStateGraph
 │  agent/llm.py      get_llm() factory (memoized)
-│  agent/tools.py    build_mcp_client(servers, *, auth_token)
+│  agent/toolset.py  compile_tools(mcp_servers, auth_token) → (tools, reason)
+│  agent/tools.py    build_mcp_client(servers, *, auth_token), load_tools(client)
+│  agent/registry.py local tool registry: register(tool) / registered_tools()
 │  agent/prompts/   get_prompt("system", tool_catalog=...) + render_tool_catalog(tools)
 │  agent/config.py   pydantic-settings + default_mcp_servers() helper
 │  agent/observability.py   optional LangSmith
@@ -40,13 +42,12 @@ inside `run_agent()`:
 1. Tracing setup        agent/observability.py      enable LangSmith if key is present
 2. LLM construction     agent/llm.py                instantiate the right provider (cached)
 3. Server resolution    agent/config.py             env defaults OR caller's `mcp_servers=`
-4. MCP client build     agent/tools.py              inject the caller's bearer token
-5. Tool loading         agent/tools.py              connect to MCP servers, fetch tool list
-6. Prompt rendering     agent/prompts/__init__.py   fill {tool_catalog} from live tool list
-7. Agent compilation    agent/agent.py              bind tools to LLM, build the LangGraph graph
+4. Tool composition     agent/toolset.py            merge MCP-loaded tools + local registry
+5. Prompt rendering     agent/prompts/__init__.py   fill {tool_catalog} from live tool list
+6. Agent compilation    agent/agent.py              bind tools to LLM, build the LangGraph graph
 ```
 
-After step 6, `run_agent()` iterates `astream_events` from the graph and
+After step 5, `run_agent()` iterates `astream_events` from the graph and
 translates LangGraph's heterogeneous event stream into a small, stable
 `AgentEvent` shape. Whichever entry point invoked it (CLI / FastAPI) iterates
 those events and renders them.
@@ -198,46 +199,39 @@ override, because *which MCP servers does this user have access to?* is going
 to be a per-user question in production but is a deployment-wide constant in
 the dev demo.
 
-### Step 4 — MCP client build (`agent/tools.py`)
+### Step 4 — Tool composition (`agent/toolset.py`)
+
+```python
+tools, notools_reason = await compile_tools(
+    mcp_servers=servers,
+    auth_token=auth_token,
+)
+```
+
+`compile_tools` is the single seam responsible for producing the final
+tool list the agent binds to. It pulls from two sources and never raises
+— failures are mapped to `notools_reason`, a short string the no-tool
+system prompt surfaces back to the LLM so the model can explain the
+situation rather than crashing the stream.
+
+**Source A — MCP servers ([`agent/tools.py`](tools.py)).** When `servers`
+is non-empty, `compile_tools` calls:
 
 ```python
 client = build_mcp_client(servers, auth_token=auth_token)
+mcp_tools = await load_tools(client)
 ```
 
-`build_mcp_client` takes both inputs as arguments — neither is read from
-module-global state:
+`build_mcp_client` injects the bearer token (or, for servers with a
+`static_token`, that service credential) into per-server headers. The
+header is sent on every SSE connection — which, in
+`langchain-mcp-adapters` 0.2.x, means it's sent on every individual tool
+invocation.
 
-```python
-def build_mcp_client(
-    servers: dict[str, McpServerSpec],
-    *,
-    auth_token: str,
-) -> MultiServerMCPClient:
-    auth_header = {"Authorization": f"Bearer {auth_token}"}
-    return MultiServerMCPClient({
-        name: {**spec, "headers": auth_header}
-        for name, spec in servers.items()
-    })
-```
-
-The bearer token is placed in the `headers` dict for every server. This header
-is sent on every SSE connection — which, in `langchain-mcp-adapters` 0.2.x,
-means it's sent on every individual tool invocation.
-
-**Why a per-request client?** Headers are baked into `MultiServerMCPClient`
-at construction time in the 0.2.x adapter, and the bearer token is a
-per-request value. So we build a fresh client per call — that's fine,
-construction is cheap (no network I/O until the first tool call).
-
-### Step 5 — Tool loading (`agent/tools.py`)
-
-```python
-tools = await load_tools(client)
-```
-
-`client.get_tools()` connects to each server, performs the MCP handshake, and
-retrieves the tool list in JSON Schema format. `langchain-mcp-adapters` then
-converts each MCP tool into a LangChain `BaseTool` with:
+`client.get_tools()` connects to each server, performs the MCP handshake,
+and retrieves the tool list in JSON Schema format.
+`langchain-mcp-adapters` then converts each MCP tool into a LangChain
+`BaseTool` with:
 
 - `.name` → MCP tool name (e.g. `docs_search`)
 - `.description` → MCP tool description
@@ -247,7 +241,41 @@ This conversion is **learning checkpoint #3**: MCP JSON Schema → LangChain
 `BaseTool`. After this point, the MCP-ness is invisible — the agent sees
 ordinary LangChain tools.
 
-### Step 6 — Prompt rendering (`agent/prompts/`)
+If `load_tools` raises (server unreachable, bad handshake), the exception
+is logged with traceback and `mcp_error` is set; the agent keeps any
+locally-registered tools and runs with whatever's left.
+
+**Source B — local registry ([`agent/registry.py`](registry.py)).** Hand-written
+Python tools register at import time:
+
+```python
+from langchain_core.tools import tool
+from agent.registry import register
+
+@register
+@tool
+def get_current_time() -> str:
+    """Return the current UTC time."""
+    ...
+```
+
+`compile_tools` calls `registered_tools()` and concatenates the result
+onto the MCP list. Local tools are useful for things that don't need to
+live behind an MCP server — date/time helpers, format converters,
+in-process calculations.
+
+**Why a per-request `build_mcp_client`?** Headers are baked into
+`MultiServerMCPClient` at construction time in the 0.2.x adapter, and
+the bearer token is a per-request value. So we build a fresh client per
+call — that's fine, construction is cheap (no network I/O until the
+first tool call).
+
+**Future seam — the tool-finder layer.** A `# NOTE` block in
+`compile_tools` marks where embedding-based or LLM-based tool selection
+would slot in (CLAUDE.md C2a). The shape would be `list[BaseTool] →
+list[BaseTool]` (filter / rerank), so no caller changes when it lands.
+
+### Step 5 — Prompt rendering (`agent/prompts/`)
 
 ```python
 system_prompt = get_prompt(
@@ -300,7 +328,7 @@ of the registry design.
 
 ---
 
-### Step 7 — Agent compilation (`agent/agent.py`)
+### Step 6 — Agent compilation (`agent/agent.py`)
 
 ```python
 agent = build_agent(llm, tools, system_prompt=system_prompt)
@@ -331,7 +359,7 @@ the API request as a `tools` array. The LLM uses these schemas to know what
 names and argument shapes it can invoke. Without `bind_tools`, the LLM can
 talk about tools but can't actually call them.
 
-### Step 8 — Streaming and event translation
+### Step 7 — Streaming and event translation
 
 ```python
 async for event in agent.astream_events(
@@ -515,8 +543,10 @@ main.py               api.py
             │
    ┌────────┼─────────┬─────────────┬──────────┬──────────┐
    │        │         │             │          │          │
-observability.py  llm.py        tools.py    agent.py  prompts/
-                    │              │          │
+observability.py  llm.py       toolset.py    agent.py  prompts/
+                    │            │     │       │
+                    │       tools.py  registry.py
+                    │            │
                     └────► config.py ◄────────┘
                               │
                             .env
@@ -527,7 +557,9 @@ values either through `settings` (the singleton) or through function
 arguments. This makes each module independently testable: pass a fake LLM and
 fake tools to `build_agent`, and it assembles a graph without any network or
 API calls. Pass a fake `mcp_servers` dict + dummy auth token to `run_agent`,
-and the engine runs against any test stub.
+and the engine runs against any test stub. `toolset.compile_tools` is itself
+testable in isolation — feed it an empty server dict plus a registry seeded
+via `agent.registry.register(...)` and assert on the merged list.
 
 ---
 
@@ -591,10 +623,34 @@ servers are connected.
 ## Common questions
 
 **Q: What if an MCP server is down when I run the agent?**
-`load_tools()` will raise a connection error. `core.run_agent` catches it,
-yields a single `error` AgentEvent with the exception message, then yields
-`end`. The CLI prints it to stderr; the FastAPI endpoint surfaces it as the
-final SSE frame. The stream still terminates cleanly.
+`load_tools()` raises a connection error. `compile_tools` (in
+[`agent/toolset.py`](toolset.py)) catches it, logs the offending URL with
+traceback, and returns an empty MCP list plus a `notools_reason`. The agent
+still runs — it falls back to whatever tools are in the local registry, or to
+the no-tool prompt that lets the LLM explain the situation to the user. The
+stream always terminates cleanly with an `end` event.
+
+**Q: How do I add a hand-written Python tool (no MCP server)?**
+Use the registry in [`agent/registry.py`](registry.py):
+
+```python
+from langchain_core.tools import tool
+from agent.registry import register
+
+@register
+@tool
+def get_current_time() -> str:
+    """Return the current UTC time."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+```
+
+Tools register at import time. As long as the module containing the
+`@register` call is imported before `run_agent()` runs (the typical hosts —
+`agent/main.py`, `agent/app.py` — are good places to import them from), the
+tool surfaces in the LLM's catalog alongside MCP-loaded ones. `compile_tools`
+in [`agent/toolset.py`](toolset.py) handles the merge; you don't need to
+touch `core.py`.
 
 **Q: Can I add a third MCP server?**
 Two ways. (1) Edit `default_mcp_servers()` in `config.py` to add a new entry — it'll
