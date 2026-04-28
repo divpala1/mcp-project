@@ -1,6 +1,7 @@
 import { AlertCircle, Bot, User } from 'lucide-react';
 import type { Message } from '../../types';
 import ToolCallCard from './ToolCallCard';
+import MarkdownContent from './MarkdownContent';
 
 export default function MessageBubble({ message }: { message: Message }) {
   const isUser = message.role === 'user';
@@ -32,7 +33,11 @@ export default function MessageBubble({ message }: { message: Message }) {
                   : 'bg-canvas-card border border-canvas-border text-canvas-text rounded-tl-sm',
               ].join(' ')}
             >
-              <pre className="whitespace-pre-wrap font-sans m-0">{block.text}</pre>
+              {isUser ? (
+                <p className="whitespace-pre-wrap m-0">{block.text}</p>
+              ) : (
+                <MarkdownContent content={block.text} />
+              )}
             </div>
           );
         })}
