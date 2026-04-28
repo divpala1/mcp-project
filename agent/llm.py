@@ -77,7 +77,29 @@ def get_llm(enable_thinking: bool = False) -> BaseChatModel:
             temperature=0,
         )
 
+    if provider == "openai":
+        if not settings.openai_api_key:
+            raise RuntimeError(
+                "LLM_PROVIDER=openai requires OPENAI_API_KEY in .env"
+            )
+        from langchain_openai import ChatOpenAI
+        # `base_url` is the universal knob. Leave it unset for the real OpenAI
+        # API; point it at any OpenAI-compatible endpoint to use a different
+        # provider (Together AI, Fireworks, LM Studio, Cerebras, …) — no code
+        # changes needed, just env vars.
+        #
+        # enable_thinking: OpenAI reasoning models (o1, o3) use a different
+        # mechanism (`reasoning_effort`, not a thinking block). We ignore the
+        # flag here for simplicity.
+        # TODO(future): honour enable_thinking for o1/o3 via reasoning_effort.
+        return ChatOpenAI(
+            model=settings.llm_model,
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,  # None → api.openai.com
+            temperature=0,
+        )
+
     raise RuntimeError(
         f"Unknown LLM_PROVIDER: {provider!r}. "
-        "Supported: groq | anthropic | ollama."
+        "Supported: groq | anthropic | ollama | openai."
     )

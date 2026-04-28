@@ -65,7 +65,7 @@ class AgentConfig(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # ── LLM provider + model (C4 — swap via env var only) ─────────────────
-    llm_provider: str = "groq"                   # groq | anthropic | ollama
+    llm_provider: str = "groq"                   # groq | anthropic | ollama | openai
     llm_model: str = "llama-3.3-70b-versatile"
 
     # Per-provider credentials. Only one needs to be set — `agent/llm.py`
@@ -73,6 +73,12 @@ class AgentConfig(BaseSettings):
     groq_api_key: str | None = None
     anthropic_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
+
+    # OpenAI + any OpenAI-compatible provider (Together AI, Fireworks, LM Studio, …).
+    # Leave OPENAI_BASE_URL unset to hit the real OpenAI API; point it at any
+    # compatible endpoint to switch providers with zero code changes.
+    openai_api_key: str | None = None
+    openai_base_url: str | None = None   # None → langchain_openai defaults to api.openai.com
 
     # ── MCP endpoints (C2b — multi-server) ─────────────────────────────────
     # Defaults for the demo. Production deployments override either by

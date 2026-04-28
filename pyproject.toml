@@ -59,6 +59,10 @@ dependencies = [
     "langchain-groq>=1.1.0",        # default — fast inference, good tool calling
     "langchain-anthropic>=1.4.0",
     "langchain-ollama>=1.1.0",
+    # langchain-openai doubles as the gateway for *any* OpenAI-compatible API.
+    # Set OPENAI_BASE_URL to point at Together AI, Fireworks, LM Studio, etc.
+    # — no code change needed, just env vars.
+    "langchain-openai>=0.3.0",
 
     # ── Config / boundaries ─────────────────────────────────────────────────
     "pydantic>=2.13.0",

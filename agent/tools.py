@@ -71,27 +71,27 @@ CORE_GITHUB_TOOLS: frozenset[str] = frozenset(
         # Reading & Discovery
         "github_get_file_contents",
         "github_search_repositories",
-        "github_search_code",
-        "github_search_issues",
-        "github_list_issues",
-        "github_issue_read",
+        # "github_search_code",
+        # "github_search_issues",
+        # "github_list_issues",
+        # "github_issue_read",
         "github_list_pull_requests",
         "github_pull_request_read",
         "github_get_me",
 
         # Core Write Operations
-        "github_create_or_update_file",
-        "github_push_files",
-        "github_create_branch",
-        "github_create_pull_request",
-        "github_add_issue_comment",
-        "github_issue_write",
-        "github_merge_pull_request",
-        "github_update_pull_request",
+        # "github_create_or_update_file",
+        # "github_push_files",
+        # "github_create_branch",
+        # "github_create_pull_request",
+        # "github_add_issue_comment",
+        # "github_issue_write",
+        # "github_merge_pull_request",
+        # "github_update_pull_request",
         
         # Releases & Tags
-        "github_get_latest_release",
-        "github_list_releases",
+        # "github_get_latest_release",
+        # "github_list_releases",
     ]
 )
 
