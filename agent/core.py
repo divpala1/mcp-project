@@ -34,7 +34,7 @@ from agent.config import McpServerSpec, default_mcp_servers
 from agent.llm import get_llm
 from agent.observability import setup_tracing
 from agent.prompts import get_prompt, get_prompt_version, render_tool_catalog
-from agent.tools import build_mcp_client, load_tools
+from agent.toolset import compile_tools
 
 log = logging.getLogger(__name__)
 
@@ -95,37 +95,16 @@ async def run_agent(
         llm = get_llm(enable_thinking=enable_thinking)
         servers = mcp_servers if mcp_servers is not None else default_mcp_servers()
 
-        # Tool loading: two distinct failure modes, both degrade gracefully.
-        #
-        # 1. No servers configured — not an error, just an unconfigured deployment.
-        #    The LLM is told no tools are connected; it answers from knowledge.
-        #
-        # 2. Servers configured but unreachable / erroring — a real problem the
-        #    user should know about. We catch it here so the LLM (not a raw
-        #    traceback) delivers the message. load_tools() already logs the
-        #    offending URL before re-raising, so the full detail is in the logs.
-        notools_reason: str | None = None
-        if not servers:
-            log.warning(
-                "No MCP servers configured. Set RAG_MCP_URL / NOTES_MCP_URL in .env "
-                "or pass mcp_servers= to run_agent(). Agent will run without tools."
-            )
-            notools_reason = "No tools are connected to this agent."
-            tools: list = []
-        else:
-            client = build_mcp_client(servers, auth_token=auth_token)
-            try:
-                tools = await load_tools(client)
-            except Exception as exc:
-                # Log at ERROR (this is unexpected) but don't propagate — let
-                # the LLM explain the situation to the user instead.
-                log.error("Tool load failed; running without tools: %s", exc)
-                notools_reason = (
-                    "The tool servers configured for this session could not be reached "
-                    "and no tools are available. There may be a connectivity or "
-                    "configuration issue. Let the user know so they can investigate."
-                )
-                tools = []
+        # Tool composition is delegated to agent/toolset.py. That module
+        # merges MCP-loaded tools with locally-registered tools (see
+        # agent/registry.py) and is the future seam for a tool-finder
+        # layer (CLAUDE.md C2a). It never raises — failures are mapped to
+        # `notools_reason`, a short string the no-tool system prompt
+        # surfaces to the LLM so the model can explain the situation.
+        tools, notools_reason = await compile_tools(
+            mcp_servers=servers,
+            auth_token=auth_token,
+        )
 
         # Select the system prompt based on whether any tools loaded.
         # When tools are available, the catalog is rendered into the template

@@ -1,0 +1,1 @@
+The scripts here are not being used anywhere. This is the directory where we will save code/resources that can be helpful in future.
