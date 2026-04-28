@@ -80,8 +80,8 @@ class AgentConfig(BaseSettings):
     # `run_agent()` (see core.py). This is the only place names like "rag"
     # / "notes" / "github" appear — everywhere else operates on a generic
     # dict.
-    rag_mcp_url: str = ""
-    notes_mcp_url: str = ""
+    rag_mcp_url: str | None = None
+    notes_mcp_url: str | None = None
 
     # ── GitHub MCP (https://github.com/github/github-mcp-server) ───────────
     # Hosted endpoint provided by GitHub. Uses Streamable HTTP transport
@@ -92,6 +92,14 @@ class AgentConfig(BaseSettings):
     # docstring for the auth-model split this introduces.
     github_mcp_url: str = "https://api.githubcopilot.com/mcp/"
     github_pat: str | None = None
+
+    # ── LangChain Docs MCP (https://docs.langchain.com/use-these-docs) ──────
+    # Public hosted server — no auth, Streamable HTTP transport. Provides
+    # real-time search over LangChain, LangGraph, and LangSmith docs. Useful
+    # when the agent is answering questions about the frameworks this project
+    # is built on. Included in the default set whenever the URL is non-empty;
+    # remove or blank the env var to exclude it from the tool catalog.
+    langchain_docs_mcp_url: str | None = None
 
     # ── Extended thinking (Anthropic only) ────────────────────────────────
     # Token budget for internal reasoning when enable_thinking=True is sent
@@ -133,6 +141,15 @@ def default_mcp_servers() -> dict[str, McpServerSpec]:
             "url": settings.github_mcp_url,
             "transport": "streamable_http",
             "static_token": settings.github_pat,
+        }
+
+    # LangChain Docs: public, no auth. Included whenever the URL is set.
+    # No static_token needed — build_mcp_client will inject the user bearer
+    # by default, but the server ignores any Authorization header it receives.
+    if settings.langchain_docs_mcp_url:
+        mcp_servers["langchain_docs"] = {
+            "url": settings.langchain_docs_mcp_url,
+            "transport": "streamable_http",
         }
 
     return mcp_servers

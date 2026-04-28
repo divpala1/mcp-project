@@ -64,8 +64,11 @@ immediately if a required value is missing or the wrong type.
 
 **What lives here:**
 - `LLM_PROVIDER`, `LLM_MODEL`, provider API keys
-- `RAG_MCP_URL`, `NOTES_MCP_URL` — defaults for the demo MCP servers
+- `RAG_MCP_URL`, `NOTES_MCP_URL` — defaults for the local demo MCP servers
+- `GITHUB_MCP_URL`, `GITHUB_PAT` — optional GitHub hosted MCP (static PAT credential)
+- `LANGCHAIN_DOCS_MCP_URL` — optional LangChain Docs hosted MCP (public, no auth)
 - `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`
+- `thinking_budget_tokens` — Anthropic-only; max internal reasoning tokens when thinking mode is enabled
 
 **What does NOT live here (anymore):**
 - The bearer token used to talk to MCP. That's a per-request value now —
@@ -78,16 +81,45 @@ A small helper that assembles the env-driven default server set:
 
 ```python
 def default_mcp_servers() -> dict[str, McpServerSpec]:
-    return {
-        "rag":   {"url": settings.rag_mcp_url,   "transport": "sse"},
-        "notes": {"url": settings.notes_mcp_url, "transport": "sse"},
-    }
+    mcp_servers: dict[str, McpServerSpec] = {}
+
+    if settings.rag_mcp_url:
+        mcp_servers["rag"] = {"url": settings.rag_mcp_url, "transport": "sse"}
+
+    if settings.notes_mcp_url:
+        mcp_servers["notes"] = {"url": settings.notes_mcp_url, "transport": "sse"}
+
+    # GitHub only joins when a PAT is configured — omitting it avoids surfacing
+    # auth failures inside the agent loop for users who haven't set up a PAT.
+    if settings.github_pat:
+        mcp_servers["github"] = {
+            "url": settings.github_mcp_url,
+            "transport": "streamable_http",
+            "static_token": settings.github_pat,   # service credential, not user token
+        }
+
+    # LangChain Docs: public, no auth, streamable_http.
+    if settings.langchain_docs_mcp_url:
+        mcp_servers["langchain_docs"] = {
+            "url": settings.langchain_docs_mcp_url,
+            "transport": "streamable_http",
+        }
+
+    return mcp_servers
 ```
 
-This is the *only* place the names "rag" and "notes" appear hard-coded —
-everywhere else operates on a generic `dict[str, McpServerSpec]`. That's
-deliberate: production hosts that want per-user / per-org MCP-server
-resolution skip this helper entirely and pass their own dict to `run_agent()`.
+This is the *only* place the server names appear hard-coded — everywhere else
+operates on a generic `dict[str, McpServerSpec]`. That's deliberate: production
+hosts that want per-user / per-org MCP-server resolution skip this helper entirely
+and pass their own dict to `run_agent()`.
+
+**Two auth models side by side.** `rag` and `notes` use the per-request user token
+(no `static_token` — `build_mcp_client` injects the caller's bearer). `github` uses
+`static_token`: a PAT the agent holds in env, used as the bearer for that server
+regardless of who the human caller is. `langchain_docs` has no auth at all — the
+server ignores any header it receives. All three patterns co-exist without changing
+`build_mcp_client`; it just checks whether `static_token` is present to decide which
+credential to inject.
 
 **Why this matters for learners:**
 Failing fast at startup is far less confusing than seeing a cryptic `KeyError`
@@ -565,12 +597,14 @@ yields a single `error` AgentEvent with the exception message, then yields
 final SSE frame. The stream still terminates cleanly.
 
 **Q: Can I add a third MCP server?**
-Two ways. (1) Edit `default_mcp_servers()` in `config.py` to add a third
-entry — it'll show up in every CLI run and FastAPI request. (2) Pass a
-custom `mcp_servers` dict to `run_agent(...)` from your host endpoint — that
-overrides the default and is how production multi-tenant resolution works.
-Namespacing (the `tool_*` prefix convention) is what prevents name collisions
-between servers — make sure the new server's tools have a unique prefix.
+Two ways. (1) Edit `default_mcp_servers()` in `config.py` to add a new entry — it'll
+show up in every CLI run and FastAPI request. See the GitHub and LangChain Docs
+entries already in there for the two patterns: `static_token` for a service
+credential, or no `static_token` for a per-request user token. (2) Pass a custom
+`mcp_servers` dict to `run_agent(...)` from your host endpoint — that overrides the
+default and is how production multi-tenant resolution works. Namespacing (the
+`<prefix>_<verb>` convention) is what prevents name collisions — make sure the new
+server's tools have a unique prefix.
 
 **Q: Why not just `agent.invoke(...)` instead of `agent.astream_events(...)`?**
 `invoke` waits for the entire run to finish before returning anything. For a

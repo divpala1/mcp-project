@@ -290,3 +290,66 @@ independent tool calls (`docs_stats`, `docs_list`, `notes_create`) in
 parallel. ToolNode has always supported that; the model's willingness
 to emit multiple parallel tool_calls depends on the model + prompt.
 Qwen3-32B on Groq did so cleanly here.
+
+---
+
+## Stage 5 — Third-Party / Hosted MCP Servers + Thinking Mode (2026-04-28)
+
+### What landed
+
+- **GitHub MCP** wired into `agent/config.py` as the `github` server entry. Uses
+  `streamable_http` transport and a GitHub PAT carried as a `static_token` on the
+  `McpServerSpec`. The server is omitted from the default set entirely when
+  `GITHUB_PAT` is unset, so the agent runs clean without it.
+- **LangChain Docs MCP** wired as `langchain_docs`. Public hosted server, no auth,
+  `streamable_http`. Active whenever `LANGCHAIN_DOCS_MCP_URL` is non-empty.
+- **`thinking_budget_tokens`** added to `AgentConfig`. Anthropic-only: when
+  `enable_thinking=True` is passed per-request, `agent/llm.py` enforces
+  `temperature=1` and `max_tokens >= budget` automatically (Anthropic requires both
+  constraints when extended thinking is enabled). No-op for all other providers.
+- `.env.example` updated with `GITHUB_MCP_URL`, `GITHUB_PAT`, and
+  `LANGCHAIN_DOCS_MCP_URL` entries.
+
+### Decisions worth remembering
+
+**Two auth models in the same server dict (the split that matters).** The `rag` and
+`notes` servers use the per-request user token: `build_mcp_client` injects the
+caller's bearer straight from `run_agent(auth_token=...)`. The `github` server uses a
+static PAT held in env — the same credential for every request. These two patterns
+co-exist in `McpServerSpec` via the `static_token` field: when present,
+`build_mcp_client` substitutes it for the per-request token for that server only.
+
+The reason for the split: GitHub's MCP server has no concept of your app's users or
+`org_id`. It authenticates the *agent* as a service account (the PAT owner), not the
+human caller. Forwarding the user's opaque `tok_alice` bearer to GitHub would result
+in a `401` on every call. `static_token` is the escape hatch for exactly this case.
+
+**`streamable_http` vs `sse`.** Both GitHub MCP and LangChain Docs MCP use
+`streamable_http` — the MCP spec's newer transport. The wire shape is similar to SSE
+(NDJSON over HTTP), but the framing and session model differ. `langchain-mcp-adapters`
+handles the difference transparently; the only configuration change is
+`"transport": "streamable_http"`. Local servers built with FastMCP still use `"sse"`.
+
+**LangChain Docs server silently ignores the user bearer.** `build_mcp_client`
+injects the per-request bearer for `langchain_docs` (no `static_token`, so default
+behaviour applies). The public server simply ignores any `Authorization` header it
+receives. This is harmless — the header goes out, gets discarded, no error. We noted
+it in comments rather than adding special-casing: a `no_auth=True` flag on the spec
+would be marginally cleaner but adds complexity for one server.
+
+**Thinking budget as a deployment constant.** `thinking_budget_tokens` lives in
+`AgentConfig` (env-backed) rather than being a per-request argument. The reasoning:
+the budget is a cost/latency knob that the operator controls at deployment time — not
+something callers should be able to set arbitrarily (it directly affects token billing
+and response latency). If a per-request override is ever needed, pass it through a
+custom endpoint.
+
+### Learning checkpoints surfaced
+
+- **C2b (multi-server)** — extended to three server types: local SSE, hosted
+  Streamable HTTP with per-request user token (LangChain Docs), and hosted Streamable
+  HTTP with static service credential (GitHub). All three co-exist in the same
+  `McpServerSpec` dict without any shared code changes.
+- **C4 (provider swap)** — `thinking_budget_tokens` is Anthropic-specific; `llm.py`
+  guards it behind `if provider == "anthropic":`, keeping the other provider branches
+  clean.
