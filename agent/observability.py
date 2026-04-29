@@ -95,8 +95,7 @@ def build_langfuse_callback() -> Any | None:
         )
         return None
 
-    # Langfuse v3: credentials belong on the Langfuse client, not CallbackHandler.
-    # CallbackHandler() takes no args — it picks up the already-initialized client.
+    # Langfuse v3: credentials inputted in the Langfuse client
     Langfuse(
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,

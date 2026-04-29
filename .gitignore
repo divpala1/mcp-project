@@ -31,3 +31,4 @@ _archive/
 
 # Qdrant local data (bind-mounted from docker-compose.yml)
 qdrant_data/
+temp/
