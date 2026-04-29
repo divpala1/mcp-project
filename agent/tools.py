@@ -71,13 +71,15 @@ CORE_GITHUB_TOOLS: frozenset[str] = frozenset(
         # Reading & Discovery
         "github_get_file_contents",
         "github_search_repositories",
-        # "github_search_code",
+        "github_search_code",
         # "github_search_issues",
         # "github_list_issues",
         # "github_issue_read",
         "github_list_pull_requests",
         "github_pull_request_read",
         "github_get_me",
+        "github_list_commits",
+        "github_get_commit",
 
         # Core Write Operations
         # "github_create_or_update_file",
