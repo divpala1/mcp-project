@@ -31,7 +31,7 @@ import time
 from typing import Any, AsyncIterator, Literal, TypedDict
 
 from agent.agent import build_agent
-from agent.config import McpServerSpec, default_mcp_servers
+from agent.config import McpServerSpec, default_mcp_servers, settings
 from agent.llm import get_llm
 from agent.observability import build_langfuse_callback, set_request_token, setup_tracing
 from agent.prompts import get_prompt, get_prompt_version, render_tool_catalog
@@ -68,6 +68,8 @@ async def run_agent(
     auth_token: str,
     mcp_servers: dict[str, McpServerSpec] | None = None,
     enable_thinking: bool = False,
+    user_id: str | None = None,
+    session_id: str | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """
     Run the agent for one turn and yield structured events.
@@ -85,6 +87,16 @@ async def run_agent(
         enable_thinking: When True, enables extended thinking for Anthropic
             models (temperature=1, thinking budget applied). Has no effect
             on Groq or Ollama providers — those are silently ignored.
+        user_id: Human-readable user identifier forwarded to Langfuse as
+            the trace's first-class `user_id`. Enables "filter by user" in
+            the Langfuse UI. If None, falls back to `auth_token` so every
+            trace is still attributable — just by token rather than name.
+            Production API gateways that resolve the token to a real
+            identity (e.g. "alice@acme.com") should pass it here.
+        session_id: Optional conversation/session identifier. Langfuse
+            groups all traces with the same session_id under one session
+            view. Useful for multi-turn conversation threads once memory
+            lands. Leave None for single-turn CLI usage.
 
     Yields:
         AgentEvent dicts in the order they occur. Always terminated by an
@@ -145,6 +157,26 @@ async def run_agent(
         # which reads global env vars). Passing it here causes LangGraph to
         # propagate it to every node automatically — LLM calls and tool calls
         # all become child spans under the same trace, with no extra wiring.
+        #
+        # Langfuse v3 metadata keys (set here, not on the CallbackHandler
+        # constructor — v3 CallbackHandler takes no parameters):
+        #
+        #   langfuse_user_id  → Langfuse's first-class "User" field.
+        #                       Enables "filter by user" in the UI and the
+        #                       per-user usage/cost dashboard. Falls back to
+        #                       auth_token when no resolved identity is known
+        #                       (consistent with the token tag on log lines).
+        #
+        #   langfuse_session_id → Groups traces under one session view.
+        #                         Useful once multi-turn memory lands.
+        #
+        #   langfuse_tags     → Free-form string tags for slice-and-dice.
+        #                       We include provider + model so you can filter
+        #                       all traces for a given model in one click,
+        #                       without needing to open individual spans.
+        #                       Model is also auto-captured inside generation
+        #                       spans, but trace-level tags surface it in the
+        #                       trace list view where per-span detail isn't shown.
         callbacks = []
         lf_callback = build_langfuse_callback()
         if lf_callback:
@@ -152,10 +184,20 @@ async def run_agent(
             log.debug("Langfuse callback attached to run_config")
 
         prompt_version = f"{prompt_name}@{get_prompt_version(prompt_name)}"
+        langfuse_tags = [
+            f"provider:{settings.llm_provider}",
+            f"model:{settings.llm_model}",
+        ]
+        metadata: dict[str, Any] = {
+            "prompt_version": prompt_version,
+            "langfuse_user_id": user_id or auth_token,
+            "langfuse_tags": langfuse_tags,
+        }
+        if session_id:
+            metadata["langfuse_session_id"] = session_id
+
         run_config = {
-            "metadata": {
-                "prompt_version": prompt_version,
-            },
+            "metadata": metadata,
             "callbacks": callbacks,
         }
         log.debug(

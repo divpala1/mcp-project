@@ -60,6 +60,12 @@ class ChatRequest(BaseModel):
     # Per-request opt-in to extended thinking. Only meaningful for
     # LLM_PROVIDER=anthropic — other providers silently ignore it.
     enable_thinking: bool = False
+    # Langfuse attribution — both optional. When omitted, Langfuse falls
+    # back to the bearer token as the user identifier (still filterable,
+    # just less readable than "alice@acme.com"). Production API gateways
+    # that resolve tokens to real identities should populate these.
+    user_id: str | None = None
+    session_id: str | None = None
 
 
 def _extract_bearer(authorization: str | None) -> str:
@@ -87,7 +93,11 @@ def _extract_bearer(authorization: str | None) -> str:
 
 
 async def _sse_stream(
-    prompt: str, auth_token: str, enable_thinking: bool
+    prompt: str,
+    auth_token: str,
+    enable_thinking: bool,
+    user_id: str | None = None,
+    session_id: str | None = None,
 ) -> AsyncIterator[str]:
     """
     Convert AgentEvent dicts into SSE `data:` frames.
@@ -99,7 +109,13 @@ async def _sse_stream(
     """
     event_count = 0
     t0 = time.monotonic()
-    async for ev in run_agent(prompt, auth_token=auth_token, enable_thinking=enable_thinking):
+    async for ev in run_agent(
+        prompt,
+        auth_token=auth_token,
+        enable_thinking=enable_thinking,
+        user_id=user_id,
+        session_id=session_id,
+    ):
         event_count += 1
         yield f"data: {json.dumps(ev, default=str)}\n\n"
     elapsed = time.monotonic() - t0
@@ -129,7 +145,7 @@ async def chat(
         req.enable_thinking,
     )
     return StreamingResponse(
-        _sse_stream(req.prompt, token, req.enable_thinking),
+        _sse_stream(req.prompt, token, req.enable_thinking, req.user_id, req.session_id),
         media_type="text/event-stream",
         headers={
             # Standard SSE hygiene: prevent buffering at any intermediate

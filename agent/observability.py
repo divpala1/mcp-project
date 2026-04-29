@@ -148,6 +148,20 @@ def build_langfuse_callback() -> Any | None:
     LangGraph propagates it to every node automatically, so LLM calls, tool
     calls, and the ReAct loop all appear as child spans under the same trace.
 
+    Langfuse v3 — CallbackHandler() takes NO constructor parameters.
+    All per-request attributes (user_id, session_id, tags) are set via
+    reserved metadata keys in the run_config dict passed to astream_events():
+
+        run_config["metadata"]["langfuse_user_id"]   → trace User field
+        run_config["metadata"]["langfuse_session_id"] → session grouping
+        run_config["metadata"]["langfuse_tags"]       → filterable tag list
+
+    Model name is captured automatically from the LangChain LLM object for
+    each generation span. We additionally surface it as a tag so it appears
+    in the trace list view (not just inside individual spans).
+
+    See core.py for where these keys are populated per request.
+
     Lazy import: `langfuse` is an optional dependency. Importing at module
     level would crash the agent on startup if the package is not installed.
     We only reach this code path when both keys are set, so the user has
