@@ -22,11 +22,90 @@ from __future__ import annotations
 
 import logging
 import os
+from contextvars import ContextVar
 from typing import Any
 
 from agent.config import settings
 
 log = logging.getLogger(__name__)
+
+# ─── Per-request token tag ─────────────────────────────────────────────────────
+# Stored in a ContextVar so each asyncio Task (= each concurrent request)
+# carries its own value. Call set_request_token() once at the request
+# boundary; every log line in that task's call stack gets the tag for free
+# via _TokenTagFormatter, without any manual passing.
+#
+# Default "-" appears on startup/teardown logs that belong to no request.
+_request_token: ContextVar[str] = ContextVar("_request_token", default="-")
+
+# Log format shared between CLI (main.py basicConfig) and non-CLI (uvicorn).
+# %(token_tag)s is injected by _TokenTagFormatter below.
+_LOG_FORMAT = "%(asctime)s %(levelname)s [%(token_tag)s] %(name)s — %(message)s"
+
+
+class _TokenTagFormatter(logging.Formatter):
+    """
+    Formatter that injects `token_tag` from the current async context.
+
+    Why a Formatter and not a Filter?
+        logging.Filter added to the ROOT LOGGER is only consulted when a
+        record is logged via the root logger itself. Records from child
+        loggers (agent.core, agent.tools, …) propagate to the root's
+        *handlers* via Logger.callHandlers(), which calls handler.handle()
+        directly — bypassing Logger.handle() and therefore the root logger's
+        own filter() method entirely. Adding the filter to the root logger
+        simply does not work for child-logger records.
+
+        A Formatter runs inside handler.emit(), which IS called for every
+        record that reaches the handler regardless of which child logger
+        produced it. Reading the ContextVar here is the correct place.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        record.token_tag = _request_token.get()  # type: ignore[attr-defined]
+        return super().format(record)
+
+
+def set_request_token(token: str) -> None:
+    """
+    Stamp all log lines in the current async context with a token prefix.
+
+    Call once at the entry point of every request (run_agent in core.py
+    for the CLI path; the API endpoint in api.py for the HTTP path). Every
+    log.* call anywhere in the call stack — llm.py, tools.py, toolset.py,
+    etc. — automatically includes the tag without any manual threading.
+
+    Only the first 8 characters of the token are used (e.g. "tok_alic…"),
+    enough to identify the caller without exposing the credential.
+    """
+    tag = (token[:8] + "…") if token else "<empty>"
+    _request_token.set(tag)
+
+
+def configure_logging() -> None:
+    """
+    Idempotent logging bootstrap: installs _TokenTagFormatter on the root
+    logger's handlers so every log line carries the current request's token.
+
+    Called from:
+      - main.py at process start (before anything else logs).
+      - setup_tracing() for non-CLI entry points (uvicorn may have already
+        installed its own handlers; we update their formatters in place).
+
+    Why update handler formatters directly?
+        logging.basicConfig() is a no-op when handlers already exist
+        (e.g. after uvicorn installs its StreamHandler). We must set the
+        formatter on existing handlers explicitly.
+    """
+    logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
+    logging.root.setLevel(logging.INFO)
+
+    # Apply _TokenTagFormatter to every handler currently on the root logger.
+    # This covers both the handler basicConfig just created (if any) and
+    # handlers uvicorn installed before our code ran.
+    formatter = _TokenTagFormatter(_LOG_FORMAT)
+    for handler in logging.root.handlers:
+        handler.setFormatter(formatter)
 
 
 def setup_tracing() -> None:
@@ -36,18 +115,11 @@ def setup_tracing() -> None:
     effectively a last-chance override — fine because we call this
     before any LangChain object is constructed.
 
-    Also ensures the root logger is configured at INFO when this is
-    called from a non-CLI entry point (e.g. uvicorn). `basicConfig` is a
-    no-op if handlers already exist, so it won't override uvicorn's own
-    logging setup — but it *will* set the level on uvicorn's existing
-    root handler if one was installed. We call `logging.root.setLevel`
-    explicitly to cover that case.
+    Also ensures the root logger is configured when called from a non-CLI
+    entry point (e.g. uvicorn). configure_logging() is idempotent so
+    calling it here is safe even if main.py already ran it.
     """
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-    )
-    logging.root.setLevel(logging.INFO)
+    configure_logging()
     # Quiet noisy third-party loggers regardless of entry point.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("mcp").setLevel(logging.WARNING)

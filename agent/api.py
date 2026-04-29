@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Header, HTTPException
@@ -47,6 +48,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent.core import AgentEvent, run_agent
+from agent.observability import set_request_token
 
 log = logging.getLogger(__name__)
 
@@ -71,13 +73,16 @@ def _extract_bearer(authorization: str | None) -> str:
     header reach MCP.
     """
     if not authorization or not authorization.lower().startswith("bearer "):
+        log.warning("Rejected request: missing or malformed Authorization header")
         raise HTTPException(
             status_code=401,
             detail="Missing or malformed Authorization header (expected 'Bearer <token>')",
         )
     token = authorization.split(" ", 1)[1].strip()
     if not token:
+        log.warning("Rejected request: empty bearer token")
         raise HTTPException(status_code=401, detail="Empty bearer token")
+    log.debug("Bearer token extracted successfully")
     return token
 
 
@@ -92,8 +97,13 @@ async def _sse_stream(
     in tool outputs). They get stringified rather than crashing the
     stream — verbose but safe.
     """
+    event_count = 0
+    t0 = time.monotonic()
     async for ev in run_agent(prompt, auth_token=auth_token, enable_thinking=enable_thinking):
+        event_count += 1
         yield f"data: {json.dumps(ev, default=str)}\n\n"
+    elapsed = time.monotonic() - t0
+    log.info("SSE stream complete: %d events in %.2fs", event_count, elapsed)
 
 
 @router.post("/chat")
@@ -110,6 +120,14 @@ async def chat(
     derived from the token.
     """
     token = _extract_bearer(authorization)
+    # Stamp every log line for this request with the caller's token tag.
+    # Must happen before run_agent() so auth/routing logs are also tagged.
+    set_request_token(token)
+    log.info(
+        "POST /agent/chat: prompt_len=%d enable_thinking=%s",
+        len(req.prompt),
+        req.enable_thinking,
+    )
     return StreamingResponse(
         _sse_stream(req.prompt, token, req.enable_thinking),
         media_type="text/event-stream",

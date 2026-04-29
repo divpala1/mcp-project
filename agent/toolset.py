@@ -68,6 +68,8 @@ async def compile_tools(
     underlying exception is logged with traceback at ERROR level so the
     full detail is recoverable.
     """
+    log.info("compile_tools: %d MCP server(s) configured", len(mcp_servers))
+
     mcp_tools: list[BaseTool] = []
     mcp_error: str | None = None
 
@@ -108,6 +110,7 @@ async def compile_tools(
         # Pick the most informative reason. If MCP failed, that's the
         # interesting fact; otherwise it's just an unconfigured deployment.
         reason = mcp_error or "No tools are connected to this agent."
+        log.warning("No tools available: %s", reason)
         return [], reason
 
     log.info(

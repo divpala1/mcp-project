@@ -146,7 +146,9 @@ def build_mcp_client(
         # Pick the bearer: static credential wins; otherwise the per-request
         # user token. Empty string would produce a malformed header, so treat
         # falsy as "not set".
+        using_static = bool(spec.get("static_token"))
         token = spec.get("static_token") or auth_token
+        token_kind = "static" if using_static else "user"
 
         # Strip static_token before passing to MultiServerMCPClient — the
         # adapter splats connection dict keys as kwargs into the session
@@ -155,6 +157,19 @@ def build_mcp_client(
         connection["headers"] = {"Authorization": f"Bearer {token}"}
         out[name] = connection
 
+        log.debug(
+            "MCP server configured: name=%s url=%s transport=%s token=%s",
+            name,
+            spec.get("url", "<unknown>"),
+            spec.get("transport", "sse"),
+            token_kind,
+        )
+
+    log.info(
+        "Building MCP client for %d server(s): %s",
+        len(out),
+        ", ".join(out.keys()) if out else "<none>",
+    )
     # tool_name_prefix=True prepends "{server_name}_" to every tool name,
     # making origin unambiguous in the LLM's tool list (e.g. github_get_me,
     # github_list_branches). Our own server tool names are designed around
@@ -203,4 +218,6 @@ async def load_tools(client: MultiServerMCPClient) -> list[BaseTool]:
             len(filtered),
             ", ".join(t.name for t in filtered),
         )
+        for tool in filtered:
+            log.debug("  tool available: %s — %s", tool.name, (tool.description or "").splitlines()[0][:120])
     return filtered

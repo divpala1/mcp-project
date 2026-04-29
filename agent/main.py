@@ -36,13 +36,15 @@ import asyncio
 import logging
 import os
 import sys
+import time
 
 from agent.core import run_agent
+from agent.observability import configure_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-)
+# configure_logging() is idempotent: installs _TokenTagFilter + the shared
+# log format with [token_tag] on every line. Called here (before any other
+# import that might log) so CLI startup messages are already formatted.
+configure_logging()
 # langchain-mcp-adapters + httpx log at DEBUG level by default; quiet to WARNING
 # to keep the agent's own output readable.
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -57,6 +59,9 @@ async def _print_stream(prompt: str, auth_token: str) -> None:
     print(f"▶ USER: {prompt}")
     print("=" * 72)
     print()
+
+    log.info("CLI run starting: prompt_len=%d", len(prompt))
+    t0 = time.monotonic()
 
     # Track whether we're currently mid-text-stream. Lets us insert blank
     # lines around tool boundaries without breaking a token mid-stream.
@@ -82,6 +87,9 @@ async def _print_stream(prompt: str, auth_token: str) -> None:
                 print()
                 in_text = False
             print(f"⚠  ERROR: {event['message']}", file=sys.stderr)
+
+    elapsed = time.monotonic() - t0
+    log.info("CLI run complete in %.2fs", elapsed)
 
     print()
     print("=" * 72)
@@ -112,6 +120,7 @@ def main() -> None:
         )
         sys.exit(2)
 
+    log.debug("Auth token read from AGENT_AUTH_TOKEN: %s…", token[:8])
     asyncio.run(_print_stream(prompt, token))
 
 

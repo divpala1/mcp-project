@@ -14,11 +14,14 @@ Why lazy imports inside each branch?
 """
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 
 from langchain_core.language_models import BaseChatModel
 
 from agent.config import settings
+
+log = logging.getLogger(__name__)
 
 
 # Memoized by (provider, model, enable_thinking) — at most 2 live instances
@@ -26,6 +29,12 @@ from agent.config import settings
 @lru_cache(maxsize=2)
 def get_llm(enable_thinking: bool = False) -> BaseChatModel:
     provider = settings.llm_provider.lower()
+    log.info(
+        "Initialising LLM: provider=%s model=%s enable_thinking=%s",
+        provider,
+        settings.llm_model,
+        enable_thinking,
+    )
 
     if provider == "groq":
         if not settings.groq_api_key:
@@ -36,13 +45,15 @@ def get_llm(enable_thinking: bool = False) -> BaseChatModel:
         # Groq has no extended-thinking parameter; enable_thinking is silently
         # ignored. Groq reasoning models (deepseek-r1, qwq) think internally
         # and don't need a separate flag.
-        return ChatGroq(
+        llm = ChatGroq(
             model=settings.llm_model,
             api_key=settings.groq_api_key,
             # temperature=0 for reproducible tool-calling behaviour while
             # learning. Raise it when you want more creative prose.
             temperature=0,
         )
+        log.debug("ChatGroq created (enable_thinking ignored for Groq)")
+        return llm
 
     if provider == "anthropic":
         if not settings.anthropic_api_key:
@@ -55,6 +66,7 @@ def get_llm(enable_thinking: bool = False) -> BaseChatModel:
             #   • temperature must be 1 (API rejects other values)
             #   • max_tokens must exceed budget_tokens (we add headroom)
             budget = settings.thinking_budget_tokens
+            log.debug("Anthropic extended thinking enabled: budget_tokens=%d", budget)
             return ChatAnthropic(
                 model=settings.llm_model,
                 api_key=settings.anthropic_api_key,
@@ -71,6 +83,7 @@ def get_llm(enable_thinking: bool = False) -> BaseChatModel:
     if provider == "ollama":
         from langchain_ollama import ChatOllama
         # Ollama has no extended-thinking flag; enable_thinking is ignored.
+        log.debug("ChatOllama created: base_url=%s (enable_thinking ignored)", settings.ollama_base_url)
         return ChatOllama(
             model=settings.llm_model,
             base_url=settings.ollama_base_url,
@@ -92,6 +105,8 @@ def get_llm(enable_thinking: bool = False) -> BaseChatModel:
         # mechanism (`reasoning_effort`, not a thinking block). We ignore the
         # flag here for simplicity.
         # TODO(future): honour enable_thinking for o1/o3 via reasoning_effort.
+        base = settings.openai_base_url or "api.openai.com"
+        log.debug("ChatOpenAI created: base_url=%s (enable_thinking ignored)", base)
         return ChatOpenAI(
             model=settings.llm_model,
             api_key=settings.openai_api_key,

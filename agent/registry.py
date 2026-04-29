@@ -82,14 +82,21 @@ def register(tool: BaseTool) -> BaseTool:
 
 def unregister(name: str) -> None:
     """Remove a tool by name. No-op if it wasn't registered."""
-    _registry.pop(name, None)
+    if _registry.pop(name, None) is not None:
+        log.debug("Unregistered local tool: %s", name)
+    else:
+        log.debug("unregister(%r): not found, no-op", name)
 
 
 def registered_tools() -> list[BaseTool]:
     """Return all currently-registered tools as a flat list (insertion order)."""
-    return list(_registry.values())
+    tools = list(_registry.values())
+    log.debug("registered_tools: %d local tool(s)", len(tools))
+    return tools
 
 
 def clear() -> None:
     """Drop every registered tool. Intended for tests; rarely useful in app code."""
+    count = len(_registry)
     _registry.clear()
+    log.debug("registry cleared: removed %d tool(s)", count)

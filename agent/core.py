@@ -27,12 +27,13 @@ Why an async generator (not a list, not a callback):
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, AsyncIterator, Literal, TypedDict
 
 from agent.agent import build_agent
 from agent.config import McpServerSpec, default_mcp_servers
 from agent.llm import get_llm
-from agent.observability import build_langfuse_callback, setup_tracing
+from agent.observability import build_langfuse_callback, set_request_token, setup_tracing
 from agent.prompts import get_prompt, get_prompt_version, render_tool_catalog
 from agent.toolset import compile_tools
 
@@ -90,6 +91,18 @@ async def run_agent(
         `end` event, even on error (an `error` event is emitted first).
     """
     setup_tracing()
+    # Stamp every log line in this async context with the caller's token tag.
+    # All downstream calls (llm.py, tools.py, toolset.py, …) inherit this
+    # automatically via the _TokenTagFilter on the root logger.
+    set_request_token(auth_token)
+
+    log.info(
+        "run_agent started: prompt_len=%d enable_thinking=%s servers=%s",
+        len(prompt),
+        enable_thinking,
+        "override" if mcp_servers is not None else "env-default",
+    )
+    t0 = time.monotonic()
 
     try:
         llm = get_llm(enable_thinking=enable_thinking)
@@ -136,13 +149,20 @@ async def run_agent(
         lf_callback = build_langfuse_callback()
         if lf_callback:
             callbacks.append(lf_callback)
+            log.debug("Langfuse callback attached to run_config")
 
+        prompt_version = f"{prompt_name}@{get_prompt_version(prompt_name)}"
         run_config = {
             "metadata": {
-                "prompt_version": f"{prompt_name}@{get_prompt_version(prompt_name)}",
+                "prompt_version": prompt_version,
             },
             "callbacks": callbacks,
         }
+        log.debug(
+            "run_config: prompt_version=%s callbacks=%d",
+            prompt_version,
+            len(callbacks),
+        )
 
         # Track whether the previous emission was a streaming text chunk;
         # callers that render to a terminal use this to break lines around
@@ -179,16 +199,22 @@ async def run_agent(
                 if text:
                     yield {"type": "token", "text": text}
             elif kind == "on_tool_start":
+                tool_name = event.get("name", "<tool>")
+                tool_args = event["data"].get("input", {})
+                log.debug("tool_start: %s args=%r", tool_name, tool_args)
                 yield {
                     "type": "tool_start",
-                    "name": event.get("name", "<tool>"),
-                    "args": event["data"].get("input", {}),
+                    "name": tool_name,
+                    "args": tool_args,
                 }
             elif kind == "on_tool_end":
+                tool_name = event.get("name", "<tool>")
+                tool_output = event["data"].get("output")
+                log.debug("tool_end: %s output=%r", tool_name, tool_output)
                 yield {
                     "type": "tool_end",
-                    "name": event.get("name", "<tool>"),
-                    "output": event["data"].get("output"),
+                    "name": tool_name,
+                    "output": tool_output,
                 }
     except Exception as exc:
         # Surface errors as a structured event rather than letting the
@@ -219,4 +245,6 @@ async def run_agent(
             log.exception("Agent run failed")
             yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
     finally:
+        elapsed = time.monotonic() - t0
+        log.info("run_agent finished in %.2fs", elapsed)
         yield {"type": "end"}

@@ -64,10 +64,14 @@ The compiled graph implements the classic two-node loop:
 """
 from __future__ import annotations
 
+import logging
+
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
+
+log = logging.getLogger(__name__)
 
 
 def build_agent(
@@ -90,9 +94,15 @@ def build_agent(
     sub-graph of a future supervisor, the name appears in traces and in
     LangSmith spans, which makes multi-agent runs readable.
     """
-    return create_agent(
+    graph = create_agent(
         model=llm,
         tools=tools,
         system_prompt=system_prompt,
         name="mcp-researcher",
     )
+    log.debug(
+        "ReAct graph compiled: llm=%s tools=%d",
+        type(llm).__name__,
+        len(tools),
+    )
+    return graph

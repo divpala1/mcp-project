@@ -73,7 +73,7 @@ export default function SettingsView() {
                 type={showToken ? 'text' : 'password'}
                 value={authToken}
                 onChange={(e) => setAuthToken(e.target.value)}
-                placeholder="tok_alice"
+                placeholder="tok_div"
                 className={inputClass}
                 autoComplete="off"
               />
