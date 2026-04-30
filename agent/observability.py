@@ -172,7 +172,6 @@ def build_langfuse_callback() -> Any | None:
         return None
 
     try:
-        from langfuse import Langfuse  # type: ignore[import]
         from langfuse.langchain import CallbackHandler  # type: ignore[import]
     except ImportError:
         log.warning(
@@ -181,11 +180,13 @@ def build_langfuse_callback() -> Any | None:
         )
         return None
 
-    # Langfuse v3: credentials inputted in the Langfuse client
-    Langfuse(
-        public_key=settings.langfuse_public_key,
-        secret_key=settings.langfuse_secret_key,
-        host=settings.langfuse_host,
-    )
+    # Langfuse v3: CallbackHandler() reads credentials from env vars only —
+    # it does not accept constructor arguments. Mirror the LangSmith pattern
+    # and set them explicitly so the handler works even when the keys live
+    # only in .env (pydantic-settings loads them into `settings` but does
+    # not write them back into os.environ).
+    os.environ["LANGFUSE_PUBLIC_KEY"] = settings.langfuse_public_key
+    os.environ["LANGFUSE_SECRET_KEY"] = settings.langfuse_secret_key
+    os.environ["LANGFUSE_HOST"] = settings.langfuse_host
     log.info("Langfuse tracing enabled: host=%s", settings.langfuse_host)
     return CallbackHandler()

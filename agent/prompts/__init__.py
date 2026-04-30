@@ -72,7 +72,6 @@ from threading import Lock
 from typing import Iterable
 
 from langchain_core.prompts import PromptTemplate
-from langchain_core.tools import BaseTool
 
 PROMPTS_DIR = Path(__file__).parent
 
@@ -80,7 +79,7 @@ PROMPTS_DIR = Path(__file__).parent
 # Lower values mean quicker pickup of edits on filesystems that batch mtime updates.
 PROMPT_CACHE_TTL_SECONDS: int = 300
 
-__all__ = ["get_prompt", "get_prompt_version", "render_tool_catalog", "bust_cache"]
+__all__ = ["get_prompt", "get_prompt_version", "bust_cache"]
 
 import logging
 log = logging.getLogger(__name__)

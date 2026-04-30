@@ -13,6 +13,7 @@ Validation happens once, here. Everything else in the codebase imports
 from __future__ import annotations
 
 import json
+from functools import cached_property
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,7 +37,7 @@ class ServerConfig(BaseSettings):
     embedding_model: str = "all-MiniLM-L6-v2"
 
     # ── Parsed view of auth_tokens_json ──────────────────────────────────
-    @property
+    @cached_property
     def auth_tokens(self) -> dict[str, dict[str, str]]:
         # Cheap because the validator below guarantees the raw string parses.
         return json.loads(self.auth_tokens_json)

@@ -30,6 +30,7 @@ import asyncio
 import contextvars
 import json
 import logging
+from functools import cached_property
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -57,7 +58,7 @@ class NotesConfig(BaseSettings):
     # Same shape and source as the RAG server's config. Validated at import.
     auth_tokens_json: str = '{"tok_alice":{"user_id":"alice","org_id":"acme"}}'
 
-    @property
+    @cached_property
     def auth_tokens(self) -> dict[str, dict[str, str]]:
         return json.loads(self.auth_tokens_json)
 
@@ -185,7 +186,7 @@ mcp = FastMCP("notes-server")
 # ── MCP tools ────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def create(text: str) -> dict:
+async def notes_create(text: str) -> dict:
     """
     Create a note in the calling org's workspace.
     Returns {id, text, created_at}.
@@ -195,7 +196,7 @@ async def create(text: str) -> dict:
 
 
 @mcp.tool()
-async def list() -> dict:  # noqa: A001
+async def notes_list() -> dict:
     """List the calling org's notes, most recent first. Returns {notes, count}."""
     org_id = require_identity()["org_id"]
     notes = await asyncio.to_thread(_list, org_id)

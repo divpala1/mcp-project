@@ -99,7 +99,7 @@ async def docs_search(query: str, top_k: int = 5) -> dict:
     # Wrap in a dict so the tool response is never a bare empty list.
     # Groq rejects ToolMessage content=[] ("minimum number of items is 1");
     # a dict is always non-empty at minimum {"results": [], "count": 0}.
-    # Same pattern as notes_server.notes_list.
+    # Same pattern as notes_server.notes_list (the MCP tool by that name).
     return {"results": results, "count": len(results)}
 
 
