@@ -1,6 +1,20 @@
 import { useCallback, useRef } from 'react';
 import { useStore } from '../store';
-import type { AgentEvent } from '../types';
+import type { AgentEvent, ModelParams } from '../types';
+
+// Drop empty `extra`, return undefined when nothing is set so we don't
+// send a no-op `model_params: {}` over the wire. The server's pydantic
+// model accepts both, but omitting keeps the request body cleaner and
+// makes Langfuse traces show "default params" instead of "{}".
+function pruneModelParams(mp: ModelParams | undefined): ModelParams | undefined {
+  if (!mp) return undefined;
+  const out: ModelParams = {};
+  if (mp.temperature !== undefined) out.temperature = mp.temperature;
+  if (mp.top_p !== undefined) out.top_p = mp.top_p;
+  if (mp.max_tokens !== undefined) out.max_tokens = mp.max_tokens;
+  if (mp.extra && Object.keys(mp.extra).length > 0) out.extra = mp.extra;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 // Parses the SSE stream from the agent API.
 // We use fetch + ReadableStream instead of EventSource because EventSource
@@ -12,7 +26,7 @@ export function useAgentStream() {
   const sendMessage = useCallback(async (prompt: string, enableThinking: boolean = false) => {
     // Access store actions via getState() so the callback has no stale-closure issues.
     const store = useStore.getState();
-    const { authToken, apiBaseUrl } = store.settings;
+    const { authToken, apiBaseUrl, modelParams } = store.settings;
 
     if (!authToken.trim()) {
       const id = store.addAssistantMessage();
@@ -26,6 +40,13 @@ export function useAgentStream() {
     abortRef.current = new AbortController();
     const url = apiBaseUrl.trim() ? `${apiBaseUrl.trim()}/agent/chat` : '/agent/chat';
 
+    // Build the request body. `model_params` is only included when the user
+    // has set at least one override — otherwise the server applies its
+    // deployment defaults (cleaner traces, smaller payload).
+    const prunedParams = pruneModelParams(modelParams);
+    const body: Record<string, unknown> = { prompt, enable_thinking: enableThinking };
+    if (prunedParams) body.model_params = prunedParams;
+
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -33,7 +54,7 @@ export function useAgentStream() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`,
         },
-        body: JSON.stringify({ prompt, enable_thinking: enableThinking }),
+        body: JSON.stringify(body),
         signal: abortRef.current.signal,
       });
 

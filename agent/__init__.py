@@ -16,5 +16,6 @@ from __future__ import annotations
 
 from agent.config import McpServerSpec
 from agent.core import AgentEvent, run_agent
+from agent.llm import ModelParams
 
-__all__ = ["run_agent", "AgentEvent", "McpServerSpec"]
+__all__ = ["run_agent", "AgentEvent", "McpServerSpec", "ModelParams"]

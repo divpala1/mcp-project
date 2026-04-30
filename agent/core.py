@@ -26,13 +26,14 @@ Why an async generator (not a list, not a callback):
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, AsyncIterator, Literal, TypedDict
 
 from agent.agent import build_agent
 from agent.config import McpServerSpec, default_mcp_servers, settings
-from agent.llm import get_llm
+from agent.llm import ModelParams, get_llm
 from agent.observability import build_langfuse_callback, set_request_token, setup_tracing
 from agent.prompts import get_prompt, get_prompt_version
 from agent.tools import compile_tools
@@ -68,6 +69,7 @@ async def run_agent(
     auth_token: str,
     mcp_servers: dict[str, McpServerSpec] | None = None,
     enable_thinking: bool = False,
+    model_params: ModelParams | None = None,
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> AsyncIterator[AgentEvent]:
@@ -87,6 +89,10 @@ async def run_agent(
         enable_thinking: When True, enables extended thinking for Anthropic
             models (temperature=1, thinking budget applied). Has no effect
             on Groq or Ollama providers — those are silently ignored.
+        model_params: Optional per-request LLM generation parameter
+            overrides (temperature, top_p, max_tokens, plus a free-form
+            `extra` passthrough). Missing fields fall back to deployment
+            defaults from `agent/config.py`. See `agent.llm.ModelParams`.
         user_id: Human-readable user identifier forwarded to Langfuse as
             the trace's first-class `user_id`. Enables "filter by user" in
             the Langfuse UI. If None, falls back to `auth_token` so every
@@ -109,15 +115,16 @@ async def run_agent(
     set_request_token(auth_token)
 
     log.info(
-        "run_agent started: prompt_len=%d enable_thinking=%s servers=%s",
+        "run_agent started: prompt_len=%d enable_thinking=%s servers=%s params=%s",
         len(prompt),
         enable_thinking,
         "override" if mcp_servers is not None else "env-default",
+        "override" if model_params is not None else "default",
     )
     t0 = time.monotonic()
 
     try:
-        llm = get_llm(enable_thinking=enable_thinking)
+        llm = get_llm(enable_thinking=enable_thinking, params=model_params)
         servers = mcp_servers if mcp_servers is not None else default_mcp_servers()
 
         # Tool composition is delegated to agent/toolset.py. That module
@@ -193,6 +200,13 @@ async def run_agent(
             "langfuse_user_id": user_id or auth_token,
             "langfuse_tags": langfuse_tags,
         }
+        # Surface per-request param overrides on the trace so behavioural
+        # differences (e.g. "why was this run more verbose?") are debuggable
+        # in the Langfuse UI without digging into the request body.
+        # `model_dump(exclude_none=True)` keeps the metadata compact.
+        if model_params is not None:
+            # Langfuse v3 requires metadata values to be strings.
+            metadata["model_params"] = json.dumps(model_params.model_dump(exclude_none=True))
         if session_id:
             metadata["langfuse_session_id"] = session_id
 

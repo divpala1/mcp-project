@@ -25,9 +25,23 @@ export interface Message {
   error?: string;
 }
 
+// Mirrors agent.llm.ModelParams on the server. All fields optional —
+// missing values fall back to the deployment defaults from agent/config.py.
+// `extra` is a free-form passthrough for provider-specific kwargs (e.g.
+// `presence_penalty` for OpenAI, `top_k` for Anthropic).
+export interface ModelParams {
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  extra?: Record<string, unknown>;
+}
+
 export interface Settings {
   authToken: string;
   apiBaseUrl: string;
+  // User-chosen per-request defaults applied to every chat send. Empty
+  // object = "send no overrides", so the server applies its own defaults.
+  modelParams: ModelParams;
 }
 
 // SSE event shapes emitted by the agent API (agent/api.py → agent/core.py).

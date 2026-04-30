@@ -107,6 +107,23 @@ class AgentConfig(BaseSettings):
     # remove or blank the env var to exclude it from the tool catalog.
     langchain_docs_mcp_url: str | None = None
 
+    # ── LLM generation defaults (overridable per-request) ─────────────────
+    # Deployment-level defaults applied when a request doesn't supply a
+    # value. Per-request overrides come in through `run_agent(model_params=
+    # ModelParams(...))` and beat the defaults below. A field set to None
+    # means "don't send it" — the provider applies its own default.
+    #
+    # `default_temperature` intentionally pins to 0.0 for reproducible
+    # tool-calling behaviour while learning. Raise it (or override per
+    # request) when you want more creative prose.
+    #
+    # Adding a new portable knob: add the default here, the corresponding
+    # field on `ModelParams` in agent/llm.py, and a one-liner in
+    # `_resolved_kwargs()`. See agent/llm.py for the recipe.
+    default_temperature: float | None = 0.0
+    default_top_p: float | None = None
+    default_max_tokens: int | None = None
+
     # ── Extended thinking (Anthropic only) ────────────────────────────────
     # Token budget for internal reasoning when enable_thinking=True is sent
     # per-request. Only applies when LLM_PROVIDER=anthropic. Anthropic

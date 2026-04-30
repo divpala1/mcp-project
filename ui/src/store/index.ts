@@ -1,6 +1,13 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { ContentBlock, Message, MessageRole, NavSection, Settings, ToolCall } from '../types';
+import type {
+  ContentBlock,
+  Message,
+  MessageRole,
+  NavSection,
+  Settings,
+  ToolCall,
+} from '../types';
 
 function uid(): string {
   return Math.random().toString(36).slice(2, 11);
@@ -97,13 +104,25 @@ export const useStore = create<Store>()(
 
       clearMessages: () => set({ messages: [] }),
 
-      settings: { authToken: '', apiBaseUrl: '' },
+      settings: { authToken: '', apiBaseUrl: '', modelParams: {} },
       updateSettings: (patch) => set((s) => ({ settings: { ...s.settings, ...patch } })),
     }),
     {
       name: 'mcp-agent-ui',
       // Only persist settings — messages are ephemeral.
       partialize: (s) => ({ settings: s.settings }),
+      // Deep-merge persisted settings into the initial state so that fields
+      // added in newer versions (e.g. modelParams) get their default value
+      // for users with stored settings from before the field existed.
+      // Without this, zustand's default shallow merge would replace the
+      // whole `settings` object and the new field would be missing.
+      merge: (persisted, current) => {
+        const p = persisted as { settings?: Partial<Settings> } | undefined;
+        return {
+          ...current,
+          settings: { ...current.settings, ...(p?.settings ?? {}) },
+        };
+      },
     }
   )
 );

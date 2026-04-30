@@ -48,6 +48,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent.core import AgentEvent, run_agent
+from agent.llm import ModelParams
 from agent.observability import set_request_token
 
 log = logging.getLogger(__name__)
@@ -60,6 +61,10 @@ class ChatRequest(BaseModel):
     # Per-request opt-in to extended thinking. Only meaningful for
     # LLM_PROVIDER=anthropic — other providers silently ignore it.
     enable_thinking: bool = False
+    # Optional generation-parameter overrides (temperature, top_p, …).
+    # Anything missing falls back to deployment defaults from
+    # agent/config.py. See agent.llm.ModelParams for the schema.
+    model_params: ModelParams | None = None
     # Langfuse attribution — both optional. When omitted, Langfuse falls
     # back to the bearer token as the user identifier (still filterable,
     # just less readable than "alice@acme.com"). Production API gateways
@@ -96,6 +101,7 @@ async def _sse_stream(
     prompt: str,
     auth_token: str,
     enable_thinking: bool,
+    model_params: ModelParams | None = None,
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> AsyncIterator[str]:
@@ -113,6 +119,7 @@ async def _sse_stream(
         prompt,
         auth_token=auth_token,
         enable_thinking=enable_thinking,
+        model_params=model_params,
         user_id=user_id,
         session_id=session_id,
     ):
@@ -145,7 +152,14 @@ async def chat(
         req.enable_thinking,
     )
     return StreamingResponse(
-        _sse_stream(req.prompt, token, req.enable_thinking, req.user_id, req.session_id),
+        _sse_stream(
+            req.prompt,
+            token,
+            req.enable_thinking,
+            req.model_params,
+            req.user_id,
+            req.session_id,
+        ),
         media_type="text/event-stream",
         headers={
             # Standard SSE hygiene: prevent buffering at any intermediate
