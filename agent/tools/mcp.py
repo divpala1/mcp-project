@@ -43,6 +43,7 @@ Tool schema conversion (learning checkpoint #3):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from langchain_core.tools import BaseTool
@@ -58,9 +59,9 @@ log = logging.getLogger(__name__)
 # we actually need. Any tool returned by the server that is not in this set is
 # silently dropped before the LLM ever sees it.
 #
-# Names are post-prefix (i.e. "github_" has already been prepended by
-# MultiServerMCPClient with tool_name_prefix=True), so they match exactly what
-# the LLM sees in its tool list.
+# Names are the raw MCP server tool names (no server prefix). Filtering is
+# applied per-server in load_tools by checking server_name == "github", so we
+# don't need the prefix to identify which tools came from GitHub.
 #
 # TODO(future): replace this static list with embedding-based tool retrieval —
 # embed tool descriptions, retrieve top-k relevant for the user query, expose
@@ -69,31 +70,31 @@ log = logging.getLogger(__name__)
 CORE_GITHUB_TOOLS: frozenset[str] = frozenset(
     [
         # Reading & Discovery
-        "github_get_file_contents",
-        "github_search_repositories",
-        "github_search_code",
-        # "github_search_issues",
-        # "github_list_issues",
-        # "github_issue_read",
-        "github_list_pull_requests",
-        "github_pull_request_read",
-        "github_get_me",
-        "github_list_commits",
-        "github_get_commit",
+        "get_file_contents",
+        "search_repositories",
+        "search_code",
+        # "search_issues",
+        # "list_issues",
+        # "issue_read",
+        "list_pull_requests",
+        "pull_request_read",
+        "get_me",
+        "list_commits",
+        "get_commit",
 
         # Core Write Operations
-        # "github_create_or_update_file",
-        # "github_push_files",
-        # "github_create_branch",
-        # "github_create_pull_request",
-        # "github_add_issue_comment",
-        # "github_issue_write",
-        # "github_merge_pull_request",
-        # "github_update_pull_request",
+        # "create_or_update_file",
+        # "push_files",
+        # "create_branch",
+        # "create_pull_request",
+        # "add_issue_comment",
+        # "issue_write",
+        # "merge_pull_request",
+        # "update_pull_request",
 
         # Releases & Tags
-        # "github_get_latest_release",
-        # "github_list_releases",
+        # "get_latest_release",
+        # "list_releases",
     ]
 )
 
@@ -172,12 +173,11 @@ def build_mcp_client(
         len(out),
         ", ".join(out.keys()) if out else "<none>",
     )
-    # tool_name_prefix=True prepends "{server_name}_" to every tool name,
-    # making origin unambiguous in the LLM's tool list (e.g. github_get_me,
-    # github_list_branches). Our own server tool names are designed around
-    # this: rag tools use the "docs_" domain prefix (rag_docs_search) and
-    # notes tools use bare verbs (notes_create, notes_list).
-    return MultiServerMCPClient(out, tool_name_prefix=True)
+    # tool_name_prefix defaults to False — tools keep their original names as
+    # defined by the MCP server (e.g. get_me, get_file_contents, docs_search).
+    # GitHub tools are identified at load time by server name (see load_tools)
+    # rather than by name prefix, so the allowlist filter still works correctly.
+    return MultiServerMCPClient(out)
 
 
 async def load_tools(client: MultiServerMCPClient) -> list[BaseTool]:
@@ -186,9 +186,26 @@ async def load_tools(client: MultiServerMCPClient) -> list[BaseTool]:
     GitHub tools are filtered to CORE_GITHUB_TOOLS. All tools from other
     servers pass through unfiltered. This keeps the LLM's tool list focused
     and avoids the tool-explosion problem described in CLAUDE.md C2a.
+
+    Tools are loaded per-server concurrently so we can apply the GitHub
+    allowlist filter by server name (not by tool name prefix).
     """
+    GITHUB_SERVER = "github"
+
+    async def _load_server(name: str) -> list[BaseTool]:
+        tools = await client.get_tools(server_name=name)
+        if name == GITHUB_SERVER:
+            before = len(tools)
+            tools = [t for t in tools if t.name in CORE_GITHUB_TOOLS]
+            dropped = before - len(tools)
+            if dropped:
+                log.info("Dropped %d GitHub tools not in allowlist.", dropped)
+        return tools
+
     try:
-        tools = await client.get_tools()
+        results = await asyncio.gather(
+            *[_load_server(name) for name in client.connections]
+        )
     except Exception as exc:
         urls = [cfg.get("url", "<unknown>") for cfg in client.connections.values()]
         log.error(
@@ -199,18 +216,7 @@ async def load_tools(client: MultiServerMCPClient) -> list[BaseTool]:
         )
         raise
 
-    # Filter: drop any github_* tool that isn't in the allowlist.
-    # Non-github tools (no "github_" prefix) are always kept.
-    filtered: list[BaseTool] = []
-    for tool in tools:
-        if tool.name.startswith("github_") and tool.name not in CORE_GITHUB_TOOLS:
-            log.debug("Dropping GitHub tool not in allowlist: %s", tool.name)
-            continue
-        filtered.append(tool)
-
-    dropped = len(tools) - len(filtered)
-    if dropped:
-        log.info("Dropped %d GitHub tools not in allowlist.", dropped)
+    filtered: list[BaseTool] = [t for server_tools in results for t in server_tools]
 
     if not filtered:
         log.warning("MCP client returned zero tools — agent will run toolless.")

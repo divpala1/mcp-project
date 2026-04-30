@@ -34,7 +34,7 @@ from agent.agent import build_agent
 from agent.config import McpServerSpec, default_mcp_servers, settings
 from agent.llm import get_llm
 from agent.observability import build_langfuse_callback, set_request_token, setup_tracing
-from agent.prompts import get_prompt, get_prompt_version, render_tool_catalog
+from agent.prompts import get_prompt, get_prompt_version
 from agent.tools import compile_tools
 
 log = logging.getLogger(__name__)
@@ -139,7 +139,7 @@ async def run_agent(
         # tool-guidance sections would only pollute the context window.
         if tools:
             prompt_name = "system"
-            system_prompt = get_prompt("system", tool_catalog=render_tool_catalog(tools))
+            system_prompt = get_prompt("system")
         else:
             prompt_name = "system_notools"
             system_prompt = get_prompt("system_notools", reason=notools_reason)
