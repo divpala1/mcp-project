@@ -12,14 +12,23 @@ Why lazy imports inside each branch?
     Moving `from langchain_groq import ChatGroq` into the `groq` branch
     keeps cold-start clean.
 
-Per-request generation params:
-    `ModelParams` carries optional overrides (temperature, top_p,
-    max_tokens, plus a free-form `extra` passthrough) supplied by the
-    caller of `run_agent()`. Anything missing falls back to the
-    deployment default in `agent/config.py`, then to the provider's own
-    default. This is the only param-resolution path — once the LLM is
-    constructed, the parameters are baked in for the whole turn (LangGraph
-    has no per-call kwargs hook for `astream_events`).
+Per-request params:
+    `ModelParams` carries optional overrides supplied by the caller of
+    `run_agent()`. Two categories:
+
+    Provider selection (resolved before the provider branch):
+        `provider` — overrides LLM_PROVIDER for this turn.
+        `model`    — overrides LLM_MODEL for this turn.
+        `api_key`  — BYOK; stored as SecretStr so it never appears in logs
+                     or tracebacks. Falls back to the env-var key for the
+                     resolved provider if absent.
+
+    Generation params (resolved by `_resolved_kwargs()`):
+        `temperature`, `top_p`, `max_tokens`, `extra`. Anything absent
+        falls back to the deployment default in `agent/config.py`, then
+        to the provider's own default. Once the LLM is constructed, these
+        are baked in for the whole turn (LangGraph has no per-call kwargs
+        hook for `astream_events`).
 
     Adding a new portable knob (e.g. `presence_penalty`):
         1. Add the field to `ModelParams` below with a `None` default.
@@ -40,7 +49,7 @@ import logging
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from agent.config import settings
 
@@ -66,6 +75,9 @@ class ModelParams(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    provider: str | None = None        # overrides LLM_PROVIDER for this turn
+    model:    str | None = None        # overrides LLM_MODEL for this turn
+    api_key:  SecretStr | None = None  # BYOK — SecretStr so repr/logs never expose it
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
@@ -124,36 +136,42 @@ def get_llm(
     Returns a fresh `BaseChatModel` — callers should treat it as
     short-lived (one turn). See module docstring for why we don't cache.
     """
-    provider = settings.llm_provider.lower()
+    p = params or ModelParams()
+
+    provider = (p.provider or settings.llm_provider).lower()
+    model    = p.model    or settings.llm_model
+
+    _VALID = {"groq", "anthropic", "ollama", "openai"}
+    if provider not in _VALID:
+        raise RuntimeError(
+            f"Unknown provider {provider!r}. Supported: {', '.join(sorted(_VALID))}"
+        )
+
     kwargs = _resolved_kwargs(params)
     log.info(
         "Initialising LLM: provider=%s model=%s enable_thinking=%s kwargs=%s",
-        provider,
-        settings.llm_model,
-        enable_thinking,
-        kwargs,
+        provider, model, enable_thinking, kwargs,
+        # api_key intentionally excluded from log
     )
 
     if provider == "groq":
-        if not settings.groq_api_key:
+        api_key = p.api_key.get_secret_value() if p.api_key else settings.groq_api_key
+        if not api_key:
             raise RuntimeError(
-                "LLM_PROVIDER=groq requires GROQ_API_KEY in .env"
+                "provider=groq requires GROQ_API_KEY in .env or api_key in the request"
             )
         from langchain_groq import ChatGroq
         # Groq has no extended-thinking parameter; enable_thinking is silently
         # ignored. Groq reasoning models (deepseek-r1, qwq) think internally
         # and don't need a separate flag.
         log.debug("ChatGroq created (enable_thinking ignored for Groq)")
-        return ChatGroq(
-            model=settings.llm_model,
-            api_key=settings.groq_api_key,
-            **kwargs,
-        )
+        return ChatGroq(model=model, api_key=api_key, **kwargs)
 
     if provider == "anthropic":
-        if not settings.anthropic_api_key:
+        api_key = p.api_key.get_secret_value() if p.api_key else settings.anthropic_api_key
+        if not api_key:
             raise RuntimeError(
-                "LLM_PROVIDER=anthropic requires ANTHROPIC_API_KEY in .env"
+                "provider=anthropic requires ANTHROPIC_API_KEY in .env or api_key in the request"
             )
         from langchain_anthropic import ChatAnthropic
         if enable_thinking:
@@ -183,16 +201,12 @@ def get_llm(
                 kwargs["max_tokens"] = min_max_tokens
             log.debug("Anthropic extended thinking enabled: budget_tokens=%d", budget)
             return ChatAnthropic(
-                model=settings.llm_model,
-                api_key=settings.anthropic_api_key,
+                model=model,
+                api_key=api_key,
                 thinking={"type": "enabled", "budget_tokens": budget},
                 **kwargs,
             )
-        return ChatAnthropic(
-            model=settings.llm_model,
-            api_key=settings.anthropic_api_key,
-            **kwargs,
-        )
+        return ChatAnthropic(model=model, api_key=api_key, **kwargs)
 
     if provider == "ollama":
         from langchain_ollama import ChatOllama
@@ -201,23 +215,20 @@ def get_llm(
         if "max_tokens" in kwargs:
             kwargs["num_predict"] = kwargs.pop("max_tokens")
         # Ollama has no extended-thinking flag; enable_thinking is ignored.
+        # Custom base_url can be passed via ModelParams.extra if needed.
         log.debug("ChatOllama created: base_url=%s (enable_thinking ignored)", settings.ollama_base_url)
-        return ChatOllama(
-            model=settings.llm_model,
-            base_url=settings.ollama_base_url,
-            **kwargs,
-        )
+        return ChatOllama(model=model, base_url=settings.ollama_base_url, **kwargs)
 
     if provider == "openai":
-        if not settings.openai_api_key:
+        api_key = p.api_key.get_secret_value() if p.api_key else settings.openai_api_key
+        if not api_key:
             raise RuntimeError(
-                "LLM_PROVIDER=openai requires OPENAI_API_KEY in .env"
+                "provider=openai requires OPENAI_API_KEY in .env or api_key in the request"
             )
         from langchain_openai import ChatOpenAI
-        # `base_url` is the universal knob. Leave it unset for the real OpenAI
-        # API; point it at any OpenAI-compatible endpoint to use a different
-        # provider (Together AI, Fireworks, LM Studio, Cerebras, …) — no code
-        # changes needed, just env vars.
+        # `base_url` / `openai_base_url` points at any OpenAI-compatible endpoint
+        # (Together AI, Fireworks, LM Studio, Cerebras, …). Custom base_url can
+        # also be passed per-request via ModelParams.extra.
         #
         # enable_thinking: OpenAI reasoning models (o1, o3) use a different
         # mechanism (`reasoning_effort`, not a thinking block). We ignore the
@@ -228,13 +239,10 @@ def get_llm(
         base = settings.openai_base_url or "api.openai.com"
         log.debug("ChatOpenAI created: base_url=%s (enable_thinking ignored)", base)
         return ChatOpenAI(
-            model=settings.llm_model,
-            api_key=settings.openai_api_key,
+            model=model,
+            api_key=api_key,
             base_url=settings.openai_base_url,  # None → api.openai.com
             **kwargs,
         )
 
-    raise RuntimeError(
-        f"Unknown LLM_PROVIDER: {provider!r}. "
-        "Supported: groq | anthropic | ollama | openai."
-    )
+    raise RuntimeError(f"Unknown provider {provider!r}. Supported: {', '.join(sorted(_VALID))}")

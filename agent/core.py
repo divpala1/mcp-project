@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, AsyncIterator, Literal, TypedDict
+from typing import Any, AsyncGenerator, Literal, TypedDict
 
 from agent.agent import build_agent
 from agent.config import McpServerSpec, default_mcp_servers, settings
@@ -72,7 +72,7 @@ async def run_agent(
     model_params: ModelParams | None = None,
     user_id: str | None = None,
     session_id: str | None = None,
-) -> AsyncIterator[AgentEvent]:
+) -> AsyncGenerator[AgentEvent, None]:
     """
     Run the agent for one turn and yield structured events.
 
@@ -191,9 +191,11 @@ async def run_agent(
             log.debug("Langfuse callback attached to run_config")
 
         prompt_version = f"{prompt_name}@{get_prompt_version(prompt_name)}"
+        resolved_provider = (model_params.provider or settings.llm_provider) if model_params else settings.llm_provider
+        resolved_model    = (model_params.model    or settings.llm_model)    if model_params else settings.llm_model
         langfuse_tags = [
-            f"provider:{settings.llm_provider}",
-            f"model:{settings.llm_model}",
+            f"provider:{resolved_provider}",
+            f"model:{resolved_model}",
         ]
         metadata: dict[str, Any] = {
             "prompt_version": prompt_version,
@@ -206,7 +208,9 @@ async def run_agent(
         # `model_dump(exclude_none=True)` keeps the metadata compact.
         if model_params is not None:
             # Langfuse v3 requires metadata values to be strings.
-            metadata["model_params"] = json.dumps(model_params.model_dump(exclude_none=True))
+            metadata["model_params"] = json.dumps(
+                model_params.model_dump(exclude_none=True, exclude={"api_key"})
+            )
         if session_id:
             metadata["langfuse_session_id"] = session_id
 

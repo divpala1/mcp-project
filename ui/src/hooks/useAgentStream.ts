@@ -9,6 +9,9 @@ import type { AgentEvent, ModelParams } from '../types';
 function pruneModelParams(mp: ModelParams | undefined): ModelParams | undefined {
   if (!mp) return undefined;
   const out: ModelParams = {};
+  if (mp.provider) out.provider = mp.provider;
+  if (mp.model) out.model = mp.model;
+  if (mp.api_key) out.api_key = mp.api_key;
   if (mp.temperature !== undefined) out.temperature = mp.temperature;
   if (mp.top_p !== undefined) out.top_p = mp.top_p;
   if (mp.max_tokens !== undefined) out.max_tokens = mp.max_tokens;

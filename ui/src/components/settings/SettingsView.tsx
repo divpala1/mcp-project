@@ -38,9 +38,21 @@ function Card({ title, children }: { title: string; children: ReactNode }) {
 // (the server falls back to its deployment default). Returns the params
 // object plus per-field validation errors. We keep parsing centralized here
 // so the Save handler stays simple.
+const VALID_PROVIDERS = ['groq', 'anthropic', 'ollama', 'openai'] as const;
+
 function parseModelParams(form: ModelParamsForm): { params: ModelParams; errors: ModelParamsErrors } {
   const errors: ModelParamsErrors = {};
   const params: ModelParams = {};
+
+  if (form.provider) {
+    if (!VALID_PROVIDERS.includes(form.provider as typeof VALID_PROVIDERS[number])) {
+      errors.provider = `Must be one of: ${VALID_PROVIDERS.join(', ')}.`;
+    } else {
+      params.provider = form.provider;
+    }
+  }
+  if (form.model.trim()) params.model = form.model.trim();
+  if (form.api_key.trim()) params.api_key = form.api_key.trim();
 
   if (form.temperature.trim()) {
     const n = Number(form.temperature);
@@ -88,6 +100,9 @@ function parseModelParams(form: ModelParamsForm): { params: ModelParams; errors:
 // Form state mirrors ModelParams but uses strings so empty/unset is
 // distinguishable from 0 (which is a valid temperature).
 interface ModelParamsForm {
+  provider: string;
+  model: string;
+  api_key: string;
   temperature: string;
   top_p: string;
   max_tokens: string;
@@ -98,6 +113,9 @@ type ModelParamsErrors = Partial<Record<keyof ModelParamsForm, string>>;
 
 function modelParamsToForm(mp: ModelParams): ModelParamsForm {
   return {
+    provider: mp.provider ?? '',
+    model: mp.model ?? '',
+    api_key: mp.api_key ?? '',
     temperature: mp.temperature !== undefined ? String(mp.temperature) : '',
     top_p: mp.top_p !== undefined ? String(mp.top_p) : '',
     max_tokens: mp.max_tokens !== undefined ? String(mp.max_tokens) : '',
@@ -109,7 +127,7 @@ function modelParamsToForm(mp: ModelParams): ModelParamsForm {
 // without false "changed" diffs caused by key ordering.
 function canonicalizeParams(mp: ModelParams): string {
   const ordered: Record<string, unknown> = {};
-  for (const k of ['temperature', 'top_p', 'max_tokens', 'extra'] as const) {
+  for (const k of ['provider', 'model', 'api_key', 'temperature', 'top_p', 'max_tokens', 'extra'] as const) {
     if (mp[k] !== undefined) ordered[k] = mp[k];
   }
   return JSON.stringify(ordered);
@@ -123,6 +141,7 @@ export default function SettingsView() {
     modelParamsToForm(settings.modelParams ?? {})
   );
   const [showToken, setShowToken] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
   const [saved, setSaved] = useState(false);
 
   const { params: parsedParams, errors: paramErrors } = parseModelParams(paramsForm);
@@ -214,6 +233,64 @@ export default function SettingsView() {
             Per-request overrides sent with every chat. Leave a field empty to
             use the server's deployment default (see agent/config.py).
           </p>
+
+          <Field
+            label="Provider"
+            hint="Override LLM_PROVIDER for every request. Leave empty to use the server's deployment default."
+            error={paramErrors.provider}
+          >
+            <div className={wrapperClass(!!paramErrors.provider)}>
+              <select
+                value={paramsForm.provider}
+                onChange={(e) => updateParamField('provider', e.target.value)}
+                className={`${inputClass} cursor-pointer`}
+              >
+                <option value="">server default</option>
+                {VALID_PROVIDERS.map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </div>
+          </Field>
+
+          <Field
+            label="Model"
+            hint="Override LLM_MODEL for every request. Must be valid for the resolved provider."
+          >
+            <div className={wrapperClass()}>
+              <input
+                type="text"
+                value={paramsForm.model}
+                onChange={(e) => updateParamField('model', e.target.value)}
+                placeholder="server default"
+                className={inputClass}
+                autoComplete="off"
+              />
+            </div>
+          </Field>
+
+          <Field
+            label="API Key (BYOK)"
+            hint="Send your own provider API key with each request. Stored locally and sent as api_key in model_params. Leave empty to use the server's key."
+          >
+            <div className={wrapperClass()}>
+              <input
+                type={showApiKey ? 'text' : 'password'}
+                value={paramsForm.api_key}
+                onChange={(e) => updateParamField('api_key', e.target.value)}
+                placeholder="leave empty to use server key"
+                className={inputClass}
+                autoComplete="off"
+              />
+              <button
+                onClick={() => setShowApiKey((v) => !v)}
+                className="text-canvas-text-dim hover:text-canvas-text-subtle transition-colors flex-shrink-0"
+                title={showApiKey ? 'Hide key' : 'Show key'}
+              >
+                {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </Field>
 
           <Field
             label="Temperature"

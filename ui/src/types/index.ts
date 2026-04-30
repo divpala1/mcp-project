@@ -27,9 +27,15 @@ export interface Message {
 
 // Mirrors agent.llm.ModelParams on the server. All fields optional —
 // missing values fall back to the deployment defaults from agent/config.py.
-// `extra` is a free-form passthrough for provider-specific kwargs (e.g.
-// `presence_penalty` for OpenAI, `top_k` for Anthropic).
+// Provider selection fields (provider, model, api_key) override LLM_PROVIDER,
+// LLM_MODEL, and the server-side API key for this turn. `extra` is a
+// free-form passthrough for provider-specific kwargs (e.g. `presence_penalty`
+// for OpenAI, `top_k` for Anthropic). `api_key` is sent as a plain string in
+// JSON and stored as SecretStr on the server (never logged).
 export interface ModelParams {
+  provider?: string;
+  model?: string;
+  api_key?: string;
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
