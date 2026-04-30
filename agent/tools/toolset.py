@@ -5,9 +5,9 @@ tools the agent binds to.
 Two sources feed in:
 
     1. MCP servers (loaded over SSE / Streamable HTTP via
-       `langchain-mcp-adapters` — see agent/tools.py).
+       `langchain-mcp-adapters` — see agent/tools/mcp.py).
     2. The local registry (BaseTool instances declared in Python and
-       added via `agent.registry.register` — see agent/registry.py).
+       added via `agent.tools.register` — see agent/tools/registry.py).
 
 Why this lives in its own module rather than inline in core.py:
 
@@ -37,8 +37,8 @@ import logging
 from langchain_core.tools import BaseTool
 
 from agent.config import McpServerSpec
-from agent.registry import registered_tools
-from agent.tools import build_mcp_client, load_tools
+from agent.tools.registry import registered_tools
+from agent.tools.mcp import build_mcp_client, load_tools
 
 log = logging.getLogger(__name__)
 

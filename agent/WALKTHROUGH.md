@@ -245,12 +245,12 @@ If `load_tools` raises (server unreachable, bad handshake), the exception
 is logged with traceback and `mcp_error` is set; the agent keeps any
 locally-registered tools and runs with whatever's left.
 
-**Source B — local registry ([`agent/registry.py`](registry.py)).** Hand-written
+**Source B — local registry ([`agent/tools/registry.py`](tools/registry.py)).** Hand-written
 Python tools register at import time:
 
 ```python
 from langchain_core.tools import tool
-from agent.registry import register
+from agent.tools import register
 
 @register
 @tool
@@ -559,7 +559,7 @@ fake tools to `build_agent`, and it assembles a graph without any network or
 API calls. Pass a fake `mcp_servers` dict + dummy auth token to `run_agent`,
 and the engine runs against any test stub. `toolset.compile_tools` is itself
 testable in isolation — feed it an empty server dict plus a registry seeded
-via `agent.registry.register(...)` and assert on the merged list.
+via `agent.tools.register(...)` and assert on the merged list.
 
 ---
 
@@ -631,11 +631,11 @@ the no-tool prompt that lets the LLM explain the situation to the user. The
 stream always terminates cleanly with an `end` event.
 
 **Q: How do I add a hand-written Python tool (no MCP server)?**
-Use the registry in [`agent/registry.py`](registry.py):
+Use the registry in [`agent/tools/registry.py`](tools/registry.py):
 
 ```python
 from langchain_core.tools import tool
-from agent.registry import register
+from agent.tools import register
 
 @register
 @tool

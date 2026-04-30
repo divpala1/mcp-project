@@ -35,7 +35,7 @@ from agent.config import McpServerSpec, default_mcp_servers, settings
 from agent.llm import get_llm
 from agent.observability import build_langfuse_callback, set_request_token, setup_tracing
 from agent.prompts import get_prompt, get_prompt_version, render_tool_catalog
-from agent.toolset import compile_tools
+from agent.tools import compile_tools
 
 log = logging.getLogger(__name__)
 

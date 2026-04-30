@@ -470,12 +470,12 @@ async for event in run_agent("Do something.", auth_token="tok_alice", mcp_server
 
 This is the recommended pattern for production endpoints that resolve the MCP server set dynamically per user.
 
-**Add a local Python tool (no MCP server needed).** Use the registry in [`agent/registry.py`](agent/registry.py):
+**Add a local Python tool (no MCP server needed).** Use the registry in [`agent/tools/registry.py`](agent/tools/registry.py):
 
 ```python
 from datetime import datetime, timezone
 from langchain_core.tools import tool
-from agent.registry import register
+from agent.tools import register
 
 @register
 @tool

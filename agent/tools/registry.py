@@ -18,7 +18,7 @@ Usage:
 
     from datetime import datetime, timezone
     from langchain_core.tools import tool
-    from agent.registry import register
+    from agent.tools import register
 
     @register
     @tool

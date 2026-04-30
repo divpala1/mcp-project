@@ -90,7 +90,7 @@ CORE_GITHUB_TOOLS: frozenset[str] = frozenset(
         # "github_issue_write",
         # "github_merge_pull_request",
         # "github_update_pull_request",
-        
+
         # Releases & Tags
         # "github_get_latest_release",
         # "github_list_releases",
