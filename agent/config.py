@@ -1,21 +1,19 @@
 """
 Client-side (agent) config via pydantic-settings.
 
-Mirrors the pattern in `mcp_server/core/config.py` — one class, validated
-at import, typed everywhere else. The *agent* has a larger surface than
-the server (LLM provider choice, multiple MCP endpoints, observability)
-so this file is a little fuller.
+One class, validated at import, typed everywhere else. The agent has a
+larger surface than a typical server (LLM provider choice, multiple MCP
+endpoints, observability) so this file is a little fuller.
 
 What this file owns vs. what it doesn't:
     Owned: deployment-level facts that don't vary per request (LLM choice,
     credentials, observability). Plus the env-driven *default* MCP server
     list, exposed via `default_mcp_servers()`.
 
-    NOT owned: anything per-request. The user's bearer token (which
-    identifies the *caller* to user-aware servers like our RAG/notes
-    backends) is a per-request value passed to `run_agent()` — production
-    callers forward the user's `Authorization` header through; the CLI
-    reads `AGENT_AUTH_TOKEN` from env on its own (see agent/main.py).
+    NOT owned: anything per-request. The user's bearer token is a
+    per-request value passed to `run_agent()` — production callers forward
+    the user's `Authorization` header through; the CLI reads
+    `AGENT_AUTH_TOKEN` from env on its own (see agent/main.py).
 
     Static service credentials (e.g. a GitHub PAT used by the GitHub MCP
     server) ARE owned here — they're deployment-level, not per-request.
@@ -47,9 +45,7 @@ class McpServerSpec(TypedDict, total=False):
            token is used as the bearer for this server, regardless of who
            the user is. This is how third-party servers like GitHub MCP
            work: they expect a service credential (a PAT) that the agent
-           holds in env, not a user identity token. The user's identity is
-           irrelevant to GitHub — the agent acts under one configured
-           service account.
+           holds in env, not a user identity token.
 
         `static_token` is stripped from the spec inside build_mcp_client
         before the dict reaches `MultiServerMCPClient`, since the adapter
@@ -79,15 +75,6 @@ class AgentConfig(BaseSettings):
     # compatible endpoint to switch providers with zero code changes.
     openai_api_key: str | None = None
     openai_base_url: str | None = None   # None → langchain_openai defaults to api.openai.com
-
-    # ── MCP endpoints (C2b — multi-server) ─────────────────────────────────
-    # Defaults for the demo. Production deployments override either by
-    # setting their own env vars OR by passing `mcp_servers=` directly to
-    # `run_agent()` (see core.py). This is the only place names like "rag"
-    # / "notes" / "github" appear — everywhere else operates on a generic
-    # dict.
-    rag_mcp_url: str | None = None
-    notes_mcp_url: str | None = None
 
     # ── GitHub MCP (https://github.com/github/github-mcp-server) ───────────
     # Hosted endpoint provided by GitHub. Uses Streamable HTTP transport
@@ -154,14 +141,12 @@ def default_mcp_servers() -> dict[str, McpServerSpec]:
     Why a function (not a module-level constant): keeps the helper
     re-evaluable in tests that monkey-patch `settings`, and avoids
     surprising people who change env between imports.
+
+    Add new MCP servers here by reading their URL/token from settings and
+    appending an entry to the dict. The key becomes the server's namespace
+    prefix in the aggregated tool catalog.
     """
     mcp_servers: dict[str, McpServerSpec] = {}
-
-    if settings.rag_mcp_url:
-        mcp_servers["rag"] = {"url": settings.rag_mcp_url, "transport": "sse"}
-
-    if settings.notes_mcp_url:
-        mcp_servers["notes"] = {"url": settings.notes_mcp_url, "transport": "sse"}
 
     # GitHub only joins the set when a PAT is configured — without one the
     # server would reject every call, so we'd rather omit it entirely than
