@@ -21,7 +21,18 @@ What this file owns vs. what it doesn't:
 """
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Annotated, TypedDict
+
+from pydantic import BeforeValidator
+
+
+def _empty_str_to_none(v: object) -> object:
+    if v == "":
+        return None
+    return v
+
+
+OptionalInt = Annotated[int | None, BeforeValidator(_empty_str_to_none)]
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -128,6 +139,52 @@ class AgentConfig(BaseSettings):
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
     langfuse_host: str = "https://cloud.langfuse.com"
+
+    # ── Conversation memory (short-term, thread-scoped) ────────────────────
+    # CLAUDE.md learning checkpoint #11: "where memory goes."
+    #
+    # This wires LangGraph's checkpointer mechanism — the canonical way to
+    # add multi-turn memory in LangGraph 1.x. Each conversation is a "thread"
+    # keyed by `thread_id` (we map session_id → thread_id in core.run_agent).
+    # On every step, the compiled graph snapshots its state to the configured
+    # backend; the next call with the same thread_id resumes from there.
+    #
+    # Three backends, one knob:
+    #   "memory"   — InMemorySaver (process-local; lost on restart). Dev only.
+    #   "sqlite"   — AsyncSqliteSaver against a local file. Survives restart;
+    #                fine for single-process deployments.
+    #   "postgres" — AsyncPostgresSaver. The production choice — concurrent
+    #                writers, replication, the works.
+    #
+    # `memory_enabled=False` (default) keeps current behaviour: stateless turns,
+    # no checkpointer attached. Existing callers see no change.
+    #
+    # The bound checkpointer becomes the live memory layer for the WHOLE
+    # process — that's why it's a singleton (see agent/memory.py). The first
+    # request creates it; FastAPI lifespan / CLI shutdown closes it.
+    #
+    # Long-term semantic memory (vector-recall across threads) is NOT this —
+    # that's a `before_model` middleware hook layered on top. See the
+    # NOTE(memory) comment in agent/agent.py for the extension point.
+    memory_enabled: bool = False
+    memory_backend: str = "memory"   # memory | sqlite | postgres
+    memory_sqlite_path: str = "agent_memory.sqlite"
+    memory_postgres_url: str | None = None
+
+    # Maximum number of messages kept in the LangGraph state before each LLM
+    # call. When the history exceeds this, the oldest messages are trimmed —
+    # the first message (system prompt anchor) is always preserved, and the
+    # most recent `memory_max_messages` messages are kept verbatim.
+    #
+    # None (default) = no trimming; history grows unbounded. This is fine for
+    # short demos but will eventually fill the context window or degrade model
+    # performance in long-running sessions. Set a value when enabling memory.
+    #
+    # Rule of thumb: most LLMs perform best with 20–40 messages in context.
+    # A message is one unit (one HumanMessage, one AIMessage, one ToolMessage)
+    # — not a "turn". A turn that calls two tools produces ~5 messages.
+    # Set to e.g. 40 for ~8 full tool-calling turns, or 20 for a tighter cap.
+    memory_max_messages: OptionalInt = None
 
 
 settings = AgentConfig()

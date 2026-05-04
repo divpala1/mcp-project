@@ -78,6 +78,25 @@ observability = [
     "langfuse>=2.0.0",
 ]
 
+# Conversation memory backends. Default in-memory backend ships with langgraph
+# itself (langgraph-checkpoint, pulled transitively). The persistent backends
+# require optional packages; install only the one you need:
+#
+#   pip install -e ".[memory-sqlite]"     # local single-process deployments
+#   pip install -e ".[memory-postgres]"   # production multi-tenant
+#
+# Both packages publish under the `langgraph.checkpoint.*` namespace and the
+# agent's `agent/memory.py` defers their imports so a deployment that doesn't
+# use them never has to install them.
+memory-sqlite = [
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "aiosqlite>=0.20.0",
+]
+memory-postgres = [
+    "langgraph-checkpoint-postgres>=2.0.0",
+    "psycopg[binary,pool]>=3.2.0",
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

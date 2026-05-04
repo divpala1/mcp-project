@@ -14,12 +14,33 @@ server, the other is an MCP client).
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 
 from agent.api import router
+from agent.memory import shutdown_checkpointer
 
-app = FastAPI(title="Agent Service", description="MCP-backed agent over SSE.")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """
+    App-level lifecycle: yield to serve requests, then close persistent
+    resources on shutdown. The checkpointer (when MEMORY_ENABLED=true)
+    holds a real DB connection or sqlite file handle that must be released
+    cleanly — without this, the underlying connection leaks until the
+    process exits and we'd see warnings on graceful shutdown.
+    """
+    yield
+    await shutdown_checkpointer()
+
+
+app = FastAPI(
+    title="Agent Service",
+    description="MCP-backed agent over SSE.",
+    lifespan=_lifespan,
+)
 
 
 def _custom_openapi() -> dict:

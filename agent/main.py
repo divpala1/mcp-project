@@ -39,6 +39,7 @@ import sys
 import time
 
 from agent.core import run_agent
+from agent.memory import shutdown_checkpointer
 from agent.observability import configure_logging
 
 # configure_logging() is idempotent: installs _TokenTagFilter + the shared
@@ -53,21 +54,29 @@ logging.getLogger("mcp").setLevel(logging.WARNING)
 log = logging.getLogger("agent.main")
 
 
-async def _print_stream(prompt: str, auth_token: str) -> None:
+async def _print_stream(
+    prompt: str,
+    auth_token: str,
+    session_id: str | None = None,
+) -> None:
     print()
     print("=" * 72)
     print(f"▶ USER: {prompt}")
     print("=" * 72)
     print()
 
-    log.info("CLI run starting: prompt_len=%d", len(prompt))
+    log.info(
+        "CLI run starting: prompt_len=%d session_id=%s",
+        len(prompt),
+        session_id or "<none>",
+    )
     t0 = time.monotonic()
 
     # Track whether we're currently mid-text-stream. Lets us insert blank
     # lines around tool boundaries without breaking a token mid-stream.
     in_text = False
 
-    async for event in run_agent(prompt, auth_token=auth_token):
+    async for event in run_agent(prompt, auth_token=auth_token, session_id=session_id):
         kind = event["type"]
         if kind == "token":
             if not in_text:
@@ -121,7 +130,24 @@ def main() -> None:
         sys.exit(2)
 
     log.debug("Auth token read from AGENT_AUTH_TOKEN: %s…", token[:8])
-    asyncio.run(_print_stream(prompt, token))
+
+    # Optional CLI session id for exercising conversation memory across
+    # successive `python -m agent.main "..."` invocations. With memory
+    # enabled in .env and the same SESSION_ID exported, each run picks up
+    # the prior conversation. With memory disabled this is a no-op (no
+    # thread_id is forwarded to LangGraph). Mirrors the FastAPI body field.
+    session_id = (os.getenv("SESSION_ID") or "").strip() or None
+
+    # Wrap the run so the memory checkpointer (if MEMORY_ENABLED=true)
+    # gets its connection / file handle closed cleanly on CLI exit. No-op
+    # when memory is disabled — `shutdown_checkpointer` early-returns.
+    async def _run() -> None:
+        try:
+            await _print_stream(prompt, token, session_id=session_id)
+        finally:
+            await shutdown_checkpointer()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

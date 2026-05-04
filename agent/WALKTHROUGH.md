@@ -331,10 +331,15 @@ of the registry design.
 ### Step 6 — Agent compilation (`agent/agent.py`)
 
 ```python
-agent = build_agent(llm, tools, system_prompt=system_prompt)
+checkpointer = await get_checkpointer()
+agent = build_agent(llm, tools, system_prompt=system_prompt, checkpointer=checkpointer)
 ```
 
-`build_agent` calls `create_agent(model=llm, tools=tools, ...)` and returns a
+`get_checkpointer()` returns the process-wide checkpointer singleton (or `None`
+when `MEMORY_ENABLED=false`). See [Layer 5 — Conversation Memory](#layer-5--conversation-memory-agentmemorypy)
+for what it saves and why it's a singleton.
+
+`build_agent` calls `create_agent(model=llm, tools=tools, checkpointer=checkpointer, ...)` and returns a
 `CompiledStateGraph`. Internally, this compiles the classic two-node ReAct
 loop:
 
@@ -541,9 +546,9 @@ main.py               api.py
             │
          core.py  (run_agent, AgentEvent, McpServerSpec)
             │
-   ┌────────┼─────────┬─────────────┬──────────┬──────────┐
-   │        │         │             │          │          │
-observability.py  llm.py       toolset.py    agent.py  prompts/
+   ┌────────┼─────────┬─────────────┬──────────┬──────────┬──────────┐
+   │        │         │             │          │          │          │
+observability.py  llm.py       toolset.py    agent.py  prompts/  memory.py
                     │            │     │       │
                     │       tools.py  registry.py
                     │            │
@@ -620,6 +625,144 @@ servers are connected.
 
 ---
 
+---
+
+## Layer 5 — Conversation Memory (`agent/memory.py`)
+
+Short-term, thread-scoped memory. Controlled by `MEMORY_ENABLED` in `.env`.
+Default is `false` — all existing behaviour is unchanged until you opt in.
+
+### How it works
+
+LangGraph's checkpointer mechanism saves the graph's full state after every
+node execution, keyed by `thread_id`. When the next `run_agent()` call provides
+the same `thread_id` (via `config["configurable"]["thread_id"]`), LangGraph
+loads the last snapshot and resumes from there — the LLM sees all prior turns
+automatically, with no caller-side message threading required.
+
+`core.py` maps `session_id → thread_id`. The FastAPI client sends the same
+`session_id` on every turn of a conversation; the CLI reads it from the
+`SESSION_ID` env var. Clearing the chat in the UI rotates the `conversationId`
+in the browser store, which starts a fresh LangGraph thread.
+
+### What the checkpointer actually saves
+
+The graph state for `create_react_agent` is `MessagesState` — a single field:
+the `messages` list. Every checkpoint is a snapshot of that list. The exact
+message types saved are:
+
+| Saved object | When it appears |
+|---|---|
+| `HumanMessage(content="...")` | Each user prompt |
+| `AIMessage(content="...", tool_calls=[...])` | Each model response — including the *structured tool invocation requests* it decided to make (name + args + call ID) |
+| `ToolMessage(content="...", tool_call_id="...")` | Each tool result, keyed back to the call that produced it |
+
+A single ReAct turn that calls two tools before answering saves **five messages**
+in that turn: `HumanMessage` → `AIMessage(tool_calls=[...])` → `ToolMessage` →
+`AIMessage(tool_calls=[...])` → `ToolMessage` → final `AIMessage`.
+
+On the *next* turn, LangGraph prepends all those messages before the new
+`HumanMessage`, so the model's full context window contains the entire prior
+exchange — text, tool calls, and tool results alike. The model can reason about
+*what it called and what it got back* in previous turns, not just the final text.
+
+**Crucially**: each checkpoint is taken after each node completes, not after
+the whole run. So if the agent calls `call_model` → `tools` → `call_model`,
+there are three checkpoints. LangGraph loads the *latest* one on resume.
+
+### What is NOT saved
+
+| Not saved | Why |
+|---|---|
+| The **tool list / schemas** | Reconstructed at runtime — `compile_tools()` fetches them from MCP servers on every `run_agent()` call |
+| The **system prompt** | Passed fresh to `create_agent` each call; not part of graph state |
+| The **LLM config** (provider, model, temperature) | Runtime construct |
+| **Streaming tokens mid-generation** | Only the final accumulated `AIMessage` is saved once the node completes |
+| `run_config` metadata (user_id, Langfuse keys, etc.) | Ephemeral per-request config |
+
+The tool list is not stored — but the tool **invocations and results** are. This
+means if you change which MCP tools are available between turns, the model's
+history still shows tool calls from the prior session. That is fine in practice:
+the history is just messages, not executable references.
+
+### Message trimming (`MEMORY_MAX_MESSAGES`)
+
+Without trimming, the checkpointed history grows with every turn. Long enough
+and the LLM either hits its context window limit (hard crash) or starts
+performing worse because earlier, irrelevant messages dilute its attention.
+
+Set `MEMORY_MAX_MESSAGES=40` (or any positive integer) to cap it. When the
+history exceeds that number, a `@before_model` middleware fires before every
+LLM call and rewrites the state:
+
+```
+Before trim (7 messages, cap=4):
+  sys | H1 | A1 | H2 | A2 | H3 | A3
+
+After trim (5 messages):
+  sys | H2 | A2 | H3 | A3
+  ↑ anchor (messages[0]) always kept
+              ↑ most recent `max_messages` messages kept
+```
+
+**Why `@before_model` and not post-processing:**
+The trim must happen before the LLM sees the messages so it never receives a
+context that exceeds the cap. Trimming after the call would still persist the
+full history to the checkpointer and the next turn would load it all again.
+
+**Why `RemoveMessage(id=REMOVE_ALL_MESSAGES)` + re-add:**
+LangGraph's `MessagesState` uses an `add_messages` reducer — you cannot simply
+assign a new list. The `REMOVE_ALL_MESSAGES` sentinel tells the reducer to wipe
+the channel first; the messages that follow then become the new state. This is
+the canonical LangGraph pattern for replacing message history.
+
+**Sizing the cap.** A "message" is one object — `HumanMessage`, `AIMessage`, or
+`ToolMessage`. A turn that calls two tools produces ~5 messages. Rule of thumb:
+
+| Cap | Approx. turns retained (no tool calls) | With tool-heavy turns |
+|---|---|---|
+| 10 | ~5 turns | ~2 turns |
+| 20 | ~10 turns | ~4 turns |
+| 40 | ~20 turns | ~8 turns |
+
+**Works without memory too.** The middleware is applied whenever
+`MEMORY_MAX_MESSAGES` is set, regardless of `MEMORY_ENABLED`. Without a
+checkpointer the message list only spans the current turn (tool-calls in a
+single run), but very long tool chains can still benefit from capping.
+
+### Three backends
+
+| Backend | Set with | Survives restart? | Use case |
+|---|---|---|---|
+| `memory` | `MEMORY_BACKEND=memory` | No — process-local | Dev, quick testing |
+| `sqlite` | `MEMORY_BACKEND=sqlite` + `MEMORY_SQLITE_PATH=...` | Yes | Single-process / hobby |
+| `postgres` | `MEMORY_BACKEND=postgres` + `MEMORY_POSTGRES_URL=...` | Yes | Production, concurrent writers |
+
+Install the optional deps as needed:
+
+```bash
+pip install -e ".[memory-sqlite]"    # adds langgraph-checkpoint-sqlite + aiosqlite
+pip install -e ".[memory-postgres]"  # adds langgraph-checkpoint-postgres + psycopg
+```
+
+Imports for both are deferred into their respective branches in `memory.py` —
+a deployment using the default in-memory backend never pays for the extra packages.
+
+### The singleton and its lifecycle
+
+`get_checkpointer()` initialises the saver once per process and returns the same
+instance on every subsequent call (double-checked locking under `asyncio.Lock`).
+This is essential for `InMemorySaver`: its history lives inside the instance; a
+new instance per request would lose every prior turn immediately.
+
+An `AsyncExitStack` captures any I/O resources (the sqlite file handle, the
+postgres connection pool). `shutdown_checkpointer()` is called from:
+
+- **FastAPI**: the lifespan handler in `app.py` (`yield` → `await shutdown_checkpointer()`)
+- **CLI**: the `finally` block wrapping `_print_stream` in `main.py`
+
+---
+
 ## Common questions
 
 **Q: What if an MCP server is down when I run the agent?**
@@ -670,12 +813,23 @@ arrive, which is the UX users expect from an LLM-backed tool. The CLI prints
 them; the FastAPI router streams them as SSE frames; both paths are live.
 
 **Q: Where does memory go?**
-Short-term memory is already here: the `messages` list in state accumulates
-the full conversation *within a single `run_agent()` call*. Long-term
-(cross-session) memory needs (a) a way for the host to identify a session
-(`session_id` argument to `run_agent`), and (b) a checkpointer (`MemorySaver`
-or `PostgresSaver`) passed through to `create_agent`. The extension point is
-marked with `# NOTE(memory):` in `agent.py` and again in `core.py`.
+Short-term, cross-turn memory is implemented via LangGraph's checkpointer
+(see [Layer 5](#layer-5--conversation-memory-agentmemorypy)). Enable it with
+`MEMORY_ENABLED=true` in `.env`, pick a backend (`memory` / `sqlite` /
+`postgres`), and pass a stable `session_id` on each request — the agent will
+resume the same conversation thread automatically. The FastAPI client sends
+the browser's `conversationId` as `session_id`; the CLI reads `SESSION_ID`
+from env.
+
+Set `MEMORY_MAX_MESSAGES=40` (or any positive integer) to cap context growth.
+Without this, history grows unbounded and will eventually degrade model
+performance or exceed the context window.
+
+Long-term semantic memory (recalling facts *across* threads, e.g. user
+preferences remembered forever) is not yet implemented. It would live as a
+`before_model` middleware that embeds and retrieves from a vector store, then
+injects relevant context into the message list before the LLM call. The
+extension point is marked `# NOTE(memory):` in `agent.py`.
 
 **Q: How do I switch from Groq to Ollama?**
 In `.env`, set `LLM_PROVIDER=ollama` and `LLM_MODEL=llama3.2` (or whatever

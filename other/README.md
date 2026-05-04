@@ -1,0 +1,1 @@
+Nothing in this directory will be used in the app. This is just a place to put things that are not used in the app, but that we want to keep around for future reference or for miscellaneous purposes.

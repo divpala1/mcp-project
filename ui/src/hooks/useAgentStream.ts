@@ -30,6 +30,7 @@ export function useAgentStream() {
     // Access store actions via getState() so the callback has no stale-closure issues.
     const store = useStore.getState();
     const { authToken, apiBaseUrl, modelParams } = store.settings;
+    const { conversationId } = store;
 
     if (!authToken.trim()) {
       const id = store.addAssistantMessage();
@@ -47,7 +48,15 @@ export function useAgentStream() {
     // has set at least one override — otherwise the server applies its
     // deployment defaults (cleaner traces, smaller payload).
     const prunedParams = pruneModelParams(modelParams);
-    const body: Record<string, unknown> = { prompt, enable_thinking: enableThinking };
+    // session_id threads this turn into the LangGraph conversation memory.
+    // The server maps it to thread_id in the checkpointer. Omitting it
+    // when memory is disabled on the server is harmless — the field is
+    // optional in ChatRequest and ignored when MEMORY_ENABLED=false.
+    const body: Record<string, unknown> = {
+      prompt,
+      enable_thinking: enableThinking,
+      session_id: conversationId,
+    };
     if (prunedParams) body.model_params = prunedParams;
 
     try {

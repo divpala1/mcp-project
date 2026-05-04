@@ -67,11 +67,65 @@ from __future__ import annotations
 import logging
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import before_model
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import RemoveMessage
 from langchain_core.tools import BaseTool
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
 
 log = logging.getLogger(__name__)
+
+
+def _make_trim_middleware(max_messages: int):
+    """
+    Build a @before_model middleware that trims the message history to at
+    most `max_messages` entries before each LLM call.
+
+    Why @before_model and not a post-processing step:
+        The trim must happen *before* the LLM sees the messages so it never
+        receives a context that exceeds the cap. Trimming after would still
+        persist the full history to the checkpointer for the next turn.
+
+    What gets kept:
+        messages[0]               — always preserved as an anchor (typically
+                                    the system prompt injected by create_agent,
+                                    or the first HumanMessage if no system
+                                    prompt is in state).
+        messages[-max_messages:]  — the most recent `max_messages` messages.
+
+    Why RemoveMessage(id=REMOVE_ALL_MESSAGES) + re-add:
+        LangGraph's MessagesState uses an `add_messages` reducer — you can't
+        just assign a new list. The REMOVE_ALL_MESSAGES sentinel tells the
+        reducer to wipe the channel first; the messages that follow then
+        become the new state. This is the canonical LangGraph trimming pattern.
+
+    Note: max_messages counts individual message objects (HumanMessage,
+    AIMessage, ToolMessage), not turns. A turn that calls two tools produces
+    ~5 messages. Size your cap accordingly.
+    """
+    @before_model
+    def _trim(state, runtime) -> dict | None:
+        messages = state["messages"]
+        if len(messages) <= max_messages:
+            return None
+
+        # Keep the anchor (messages[0]) + the most recent `max_messages`.
+        # Deduplicate: if the anchor is already inside the recent slice
+        # (i.e. total history is only slightly over the cap), don't add it
+        # twice.
+        recent = messages[-max_messages:]
+        anchor = messages[0]
+        kept = recent if anchor.id in {m.id for m in recent} else [anchor, *recent]
+
+        log.debug(
+            "trim_middleware: %d → %d messages (cap=%d)",
+            len(messages), len(kept), max_messages,
+        )
+        return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept]}
+
+    return _trim
 
 
 def build_agent(
@@ -79,6 +133,8 @@ def build_agent(
     tools: list[BaseTool],
     *,
     system_prompt: str,
+    checkpointer: BaseCheckpointSaver | None = None,
+    max_messages: int | None = None,
 ) -> CompiledStateGraph:
     """
     Compile the ReAct graph. Returns a LangGraph `CompiledStateGraph` that
@@ -90,19 +146,41 @@ def build_agent(
     out of this function means the graph builder doesn't know or care
     where prompts come from.
 
+    `checkpointer` is the LangGraph persistence layer (CLAUDE.md learning
+    checkpoint #11). When provided, the compiled graph snapshots its state
+    after every step, keyed by the `thread_id` the caller supplies in
+    `config["configurable"]`. Subsequent runs with the same thread_id
+    resume from the last snapshot — the LLM sees prior turns automatically,
+    no caller-side message threading required. None means stateless mode
+    (current default; no behavioural change for callers that don't opt in).
+
+    `max_messages` caps the number of messages kept in the LangGraph state
+    before each LLM call. When set, a `@before_model` trim middleware is
+    injected automatically (see `_make_trim_middleware`). None = no trimming.
+    Most useful when a checkpointer is also attached (history grows across
+    turns), but applies within a single turn too if tool calls accumulate.
+
     `name="mcp-researcher"` labels this graph — when it's embedded as a
     sub-graph of a future supervisor, the name appears in traces and in
     LangSmith spans, which makes multi-agent runs readable.
     """
+    middleware = []
+    if max_messages is not None and max_messages > 0:
+        middleware.append(_make_trim_middleware(max_messages))
+
     graph = create_agent(
         model=llm,
         tools=tools,
         system_prompt=system_prompt,
+        checkpointer=checkpointer,
+        middleware=middleware,
         name="mcp-researcher",
     )
     log.debug(
-        "ReAct graph compiled: llm=%s tools=%d",
+        "ReAct graph compiled: llm=%s tools=%d memory=%s trim=%s",
         type(llm).__name__,
         len(tools),
+        "on" if checkpointer is not None else "off",
+        f"max={max_messages}" if max_messages else "off",
     )
     return graph

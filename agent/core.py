@@ -19,21 +19,27 @@ Why an async generator (not a list, not a callback):
     consumer-friendly form — you can `async for ev in run_agent(...)` from
     any async context.
 
-# NOTE(memory): when long-term / per-conversation memory lands, this is
-# the function that grows extra inputs (`session_id`, `user_id`) and the
-# message history will be loaded from a checkpointer instead of starting
-# from a single HumanMessage. CLAUDE.md item #11.
+# NOTE(memory): short-term per-conversation memory is wired up via the
+# LangGraph checkpointer (CLAUDE.md item #11). When `MEMORY_ENABLED=true`,
+# `agent/memory.py` provides the saver as a process-wide singleton, this
+# module fetches it via `get_checkpointer()`, hands it to `build_agent`,
+# and threads `session_id → thread_id` via run_config["configurable"]. The
+# next item on this front is long-term / vector-recall memory, which lives
+# as a `before_model` middleware in `create_agent` rather than a checkpointer
+# (see NOTE(memory) in agent/agent.py).
 """
 from __future__ import annotations
 
 import json
 import logging
 import time
+import uuid
 from typing import Any, AsyncGenerator, Literal, TypedDict
 
 from agent.agent import build_agent
 from agent.config import McpServerSpec, default_mcp_servers, settings
 from agent.llm import ModelParams, get_llm
+from agent.memory import get_checkpointer
 from agent.observability import build_langfuse_callback, set_request_token, setup_tracing
 from agent.prompts import get_prompt, get_prompt_version
 from agent.tools import compile_tools
@@ -151,8 +157,27 @@ async def run_agent(
             prompt_name = "system_notools"
             system_prompt = get_prompt("system_notools", reason=notools_reason)
 
-        agent = build_agent(llm, tools, system_prompt=system_prompt)
-        log.info("Agent compiled with %d tools, prompt=%s", len(tools), prompt_name)
+        # Conversation memory (CLAUDE.md learning checkpoint #11). Returns
+        # None when MEMORY_ENABLED=false — that's the original stateless
+        # behaviour and what existing callers see by default. When enabled,
+        # this is a process-wide singleton (see agent/memory.py); first call
+        # builds it lazily, every subsequent turn reuses the same instance.
+        checkpointer = await get_checkpointer()
+
+        agent = build_agent(
+            llm,
+            tools,
+            system_prompt=system_prompt,
+            checkpointer=checkpointer,
+            max_messages=settings.memory_max_messages,
+        )
+        log.info(
+            "Agent compiled with %d tools, prompt=%s, memory=%s, trim=%s",
+            len(tools),
+            prompt_name,
+            "on" if checkpointer is not None else "off",
+            f"max={settings.memory_max_messages}" if settings.memory_max_messages else "off",
+        )
 
         # Tag every span in this run with the prompt version. LangSmith
         # records this as run metadata; you can group/filter runs by it
@@ -214,14 +239,43 @@ async def run_agent(
         if session_id:
             metadata["langfuse_session_id"] = session_id
 
-        run_config = {
+        # Memory needs a thread_id in config["configurable"] — that's the
+        # primary key the checkpointer reads/writes against. We map the
+        # caller-supplied session_id straight to thread_id so a single ID
+        # threads identity through the agent (Langfuse session view) AND
+        # memory (LangGraph checkpointer) without the caller having to know
+        # both names.
+        #
+        # Edge case: memory is enabled but no session_id was passed. Without
+        # a thread_id LangGraph would refuse to checkpoint at all and raise
+        # at invoke time. We synthesise one so the turn still runs — but it
+        # has no continuity with future turns (the caller can't reference an
+        # ID they don't know). Logged as a warning since this is almost
+        # always a deployment / client bug, not an intentional choice.
+        configurable: dict[str, Any] = {}
+        if checkpointer is not None:
+            if session_id:
+                configurable["thread_id"] = session_id
+            else:
+                configurable["thread_id"] = f"ephemeral-{uuid.uuid4()}"
+                log.warning(
+                    "Memory is enabled but no session_id was supplied; using "
+                    "an ephemeral thread_id. This turn won't be retrievable "
+                    "in future runs. Pass session_id from your client to "
+                    "thread the conversation."
+                )
+
+        run_config: dict[str, Any] = {
             "metadata": metadata,
             "callbacks": callbacks,
         }
+        if configurable:
+            run_config["configurable"] = configurable
         log.debug(
-            "run_config: prompt_version=%s callbacks=%d",
+            "run_config: prompt_version=%s callbacks=%d thread_id=%s",
             prompt_version,
             len(callbacks),
+            configurable.get("thread_id", "<none>"),
         )
 
         # Track whether the previous emission was a streaming text chunk;

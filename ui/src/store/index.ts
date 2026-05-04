@@ -32,6 +32,14 @@ interface Store {
   finishMessage: (id: string, error?: string) => void;
   clearMessages: () => void;
 
+  // Stable ID for the current conversation thread, sent as `session_id` to
+  // the agent API. The server maps it to LangGraph's `thread_id`, which the
+  // checkpointer uses as the primary key for persisting conversation state.
+  // Regenerated on clearMessages() so each new chat starts a fresh thread.
+  // Persisted to localStorage so a page refresh continues the same thread
+  // (memory on the server is still there — the UI just lost its display).
+  conversationId: string;
+
   // --- Settings (persisted to localStorage) ---
   settings: Settings;
   updateSettings: (patch: Partial<Settings>) => void;
@@ -44,6 +52,7 @@ export const useStore = create<Store>()(
       setActiveSection: (activeSection) => set({ activeSection }),
 
       messages: [],
+      conversationId: uid(),
 
       addUserMessage: (text) => {
         const msg: Message = { ...makeMessage('user'), content: [{ type: 'text', text }], isStreaming: false };
@@ -102,25 +111,27 @@ export const useStore = create<Store>()(
           ),
         })),
 
-      clearMessages: () => set({ messages: [] }),
+      // Clear messages AND rotate conversationId so the next turn starts a
+      // fresh LangGraph thread. The old thread remains in the checkpointer
+      // backend but is no longer referenced — effectively a new conversation.
+      clearMessages: () => set({ messages: [], conversationId: uid() }),
 
       settings: { authToken: '', apiBaseUrl: '', modelParams: {} },
       updateSettings: (patch) => set((s) => ({ settings: { ...s.settings, ...patch } })),
     }),
     {
       name: 'mcp-agent-ui',
-      // Only persist settings — messages are ephemeral.
-      partialize: (s) => ({ settings: s.settings }),
-      // Deep-merge persisted settings into the initial state so that fields
-      // added in newer versions (e.g. modelParams) get their default value
-      // for users with stored settings from before the field existed.
-      // Without this, zustand's default shallow merge would replace the
-      // whole `settings` object and the new field would be missing.
+      // Persist settings + conversationId. Messages are ephemeral (UI-only),
+      // but the conversationId must survive a page refresh so the agent can
+      // resume the same LangGraph thread even though the message list is empty.
+      partialize: (s) => ({ settings: s.settings, conversationId: s.conversationId }),
       merge: (persisted, current) => {
-        const p = persisted as { settings?: Partial<Settings> } | undefined;
+        const p = persisted as { settings?: Partial<Settings>; conversationId?: string } | undefined;
         return {
           ...current,
           settings: { ...current.settings, ...(p?.settings ?? {}) },
+          // Restore the last conversationId, or keep the freshly generated one.
+          conversationId: p?.conversationId ?? current.conversationId,
         };
       },
     }
